@@ -1,0 +1,9 @@
+node_modules/
+output/
+.env
+newman_version.txt
+run_metadata.json
+*.Results.json
+*.Results.html
+*.Results_report.txt
+*.Results_screenshot.png

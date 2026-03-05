@@ -1,0 +1,17 @@
+{
+  "name": "verification-automation",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Create Test Plans and execute tests with automatic evidence upload",
+  "scripts": {
+    "create": "node create-test-plan.js",
+    "execute": "node execute-protocol.js",
+    "run": "node run.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "newman": "^6.2.1",
+    "newman-reporter-htmlextra": "^1.23.1",
+    "puppeteer": "^24.37.5"
+  }
+}

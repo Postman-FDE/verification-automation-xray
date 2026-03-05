@@ -1,0 +1,173 @@
+{
+  "info": {
+    "name": "CAPI API - Negative Auth Token Validation",
+    "_postman_id": "c4d5e6f7-a8b9-0c1d-2e3f-4a5b6c7d8e9f",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "{{baseUrl}}" },
+    { "key": "tenantId", "value": "{{tenantId}}" }
+  ],
+  "item": [
+    {
+      "name": "Request with Invalid Token (401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401', function () {",
+              "    pm.response.to.have.status(401);",
+              "});",
+              "",
+              "pm.test('Error indicates invalid token', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "    pm.expect(jsonData.error.toLowerCase()).to.include('invalid');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{invalid_CAPI_DSAR_Token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/test-user-001/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "test-user-001", "status"]
+        }
+      }
+    },
+    {
+      "name": "Request with Expired Token (401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401', function () {",
+              "    pm.response.to.have.status(401);",
+              "});",
+              "",
+              "pm.test('Error indicates expired token', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "    pm.expect(jsonData.error.toLowerCase()).to.include('expired');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{expired_CAPI_DSAR_Token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/test-user-001/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "test-user-001", "status"]
+        }
+      }
+    },
+    {
+      "name": "Request with No Auth Header (401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401', function () {",
+              "    pm.response.to.have.status(401);",
+              "});",
+              "",
+              "pm.test('Error indicates missing auth', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/test-user-001/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "test-user-001", "status"]
+        }
+      }
+    },
+    {
+      "name": "Request with Malformed Token (401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401', function () {",
+              "    pm.response.to.have.status(401);",
+              "});",
+              "",
+              "pm.test('Error indicates malformed token', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer not-a-real-jwt-token-!!!" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/test-user-001/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "test-user-001", "status"]
+        }
+      }
+    },
+    {
+      "name": "Delete with Expired Token (401)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401', function () {",
+              "    pm.response.to.have.status(401);",
+              "});",
+              "",
+              "pm.test('Cannot delete with expired token', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{expired_CAPI_DSAR_Token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/test-user-001",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "test-user-001"]
+        }
+      }
+    }
+  ]
+}

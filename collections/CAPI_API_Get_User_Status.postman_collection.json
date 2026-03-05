@@ -1,0 +1,165 @@
+{
+  "info": {
+    "name": "CAPI API - Get User Status",
+    "_postman_id": "b3c4d5e6-f7a8-9b0c-1d2e-3f4a5b6c7d8e",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "{{baseUrl}}" },
+    { "key": "tenantId", "value": "{{tenantId}}" }
+  ],
+  "item": [
+    {
+      "name": "Authenticate - Get OAuth Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Response contains access_token', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('access_token');",
+              "    pm.collectionVariables.set('auth_token', jsonData.access_token);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "grant_type", "value": "client_credentials" },
+            { "key": "client_id", "value": "{{CAPI_DSAR_Client_Id}}" },
+            { "key": "client_secret", "value": "{{CAPI_DSAR_Client_Secret}}" },
+            { "key": "scope", "value": "{{CAPI_DSAR_Scope}}" }
+          ]
+        },
+        "url": {
+          "raw": "https://login.microsoftonline.com/{{tenantId}}/oauth2/v2.0/token",
+          "protocol": "https",
+          "host": ["login", "microsoftonline", "com"],
+          "path": ["{{tenantId}}", "oauth2", "v2.0", "token"]
+        }
+      }
+    },
+    {
+      "name": "Get User Status - Active User",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('User status is active', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('userId');",
+              "    pm.expect(jsonData).to.have.property('status');",
+              "    pm.expect(jsonData.status).to.eql('active');",
+              "});",
+              "",
+              "pm.test('Response contains required fields', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('lastLogin');",
+              "    pm.expect(jsonData).to.have.property('createdAt');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/test-user-001/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "test-user-001", "status"]
+        }
+      }
+    },
+    {
+      "name": "Get User Status - Suspended User",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('User status is suspended', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.status).to.eql('suspended');",
+              "});",
+              "",
+              "pm.test('Suspension reason provided', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('suspensionReason');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/suspended-user-002/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "suspended-user-002", "status"]
+        }
+      }
+    },
+    {
+      "name": "Get User Status - Non-Existent User (404)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 404', function () {",
+              "    pm.response.to.have.status(404);",
+              "});",
+              "",
+              "pm.test('Error message returned', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/users/nonexistent-user-999/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "users", "nonexistent-user-999", "status"]
+        }
+      }
+    }
+  ]
+}

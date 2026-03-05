@@ -1,0 +1,169 @@
+{
+  "info": {
+    "name": "CAPI API - Export DSAR Data",
+    "_postman_id": "a2b3c4d5-e6f7-8a9b-0c1d-2e3f4a5b6c7d",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "{{baseUrl}}" },
+    { "key": "tenantId", "value": "{{tenantId}}" }
+  ],
+  "item": [
+    {
+      "name": "Authenticate - Get OAuth Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Response contains access_token', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('access_token');",
+              "    pm.collectionVariables.set('auth_token', jsonData.access_token);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "grant_type", "value": "client_credentials" },
+            { "key": "client_id", "value": "{{CAPI_DSAR_Client_Id}}" },
+            { "key": "client_secret", "value": "{{CAPI_DSAR_Client_Secret}}" },
+            { "key": "scope", "value": "{{CAPI_DSAR_Scope}}" }
+          ]
+        },
+        "url": {
+          "raw": "https://login.microsoftonline.com/{{tenantId}}/oauth2/v2.0/token",
+          "protocol": "https",
+          "host": ["login", "microsoftonline", "com"],
+          "path": ["{{tenantId}}", "oauth2", "v2.0", "token"]
+        }
+      }
+    },
+    {
+      "name": "Export DSAR - Valid Request",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200 or 202', function () {",
+              "    pm.expect(pm.response.code).to.be.oneOf([200, 202]);",
+              "});",
+              "",
+              "pm.test('Response contains export ID', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('exportId');",
+              "    pm.collectionVariables.set('exportId', jsonData.exportId);",
+              "});",
+              "",
+              "pm.test('Response contains status', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData.status).to.be.oneOf(['pending', 'processing', 'completed']);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"userId\": \"test-user-001\",\n  \"dataCategories\": [\"profile\", \"activity\", \"preferences\"],\n  \"format\": \"json\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/dsar/export",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "dsar", "export"]
+        }
+      }
+    },
+    {
+      "name": "Export DSAR - Check Export Status",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Export status is valid', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('status');",
+              "    pm.expect(jsonData.status).to.be.oneOf(['pending', 'processing', 'completed']);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/dsar/export/{{exportId}}/status",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "dsar", "export", "{{exportId}}", "status"]
+        }
+      }
+    },
+    {
+      "name": "Export DSAR - Invalid User (404)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 404', function () {",
+              "    pm.response.to.have.status(404);",
+              "});",
+              "",
+              "pm.test('Error message returned', function () {",
+              "    var jsonData = pm.response.json();",
+              "    pm.expect(jsonData).to.have.property('error');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"userId\": \"nonexistent-user-999\",\n  \"dataCategories\": [\"profile\"],\n  \"format\": \"json\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/dsar/export",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "dsar", "export"]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,398 @@
+#!/usr/bin/env node
+
+/**
+ * Execute Test Protocol and create Test Execution in Jira
+ * 
+ * Standalone usage:
+ *   node execute-protocol.js <test_plan_key> <protocol_key> <test_level>
+ * 
+ * Example:
+ *   node execute-protocol.js PF-501 PF-502 VV
+ * 
+ * Also importable by run.js for interactive CLI use.
+ */
+
+import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const COLLECTIONS_DIR = path.join(__dirname, 'collections');
+
+const JIRA_EMAIL = process.env.JIRA_EMAIL;
+const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
+const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
+const XRAY_CLIENT_ID = process.env.XRAY_CLIENT_ID;
+const XRAY_CLIENT_SECRET = process.env.XRAY_CLIENT_SECRET;
+const XRAY_BASE_URL = 'https://xray.cloud.getxray.app';
+
+let xrayToken = null;
+
+async function xrayAuthenticate() {
+  if (xrayToken) return xrayToken;
+  
+  const response = await fetch(`${XRAY_BASE_URL}/api/v2/authenticate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: XRAY_CLIENT_ID,
+      client_secret: XRAY_CLIENT_SECRET
+    })
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Xray auth failed: ${response.status}`);
+  }
+  
+  const token = await response.text();
+  xrayToken = token.replace(/"/g, '');
+  return xrayToken;
+}
+
+// Jira API helpers
+export function getAuthHeader() {
+  const authString = Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
+  return `Basic ${authString}`;
+}
+
+export function getJiraBaseUrl() {
+  return JIRA_BASE_URL;
+}
+
+export function checkCredentials() {
+  if (!JIRA_EMAIL || !JIRA_API_TOKEN || !JIRA_BASE_URL) {
+    console.error('❌ Missing Jira credentials in .env');
+    process.exit(1);
+  }
+  if (!XRAY_CLIENT_ID || !XRAY_CLIENT_SECRET) {
+    console.error('❌ Missing Xray credentials in .env (XRAY_CLIENT_ID, XRAY_CLIENT_SECRET)');
+    process.exit(1);
+  }
+}
+
+function textToADF(text) {
+  const lines = text.split('\n');
+  const content = [];
+  let i = 0;
+  
+  while (i < lines.length) {
+    const line = lines[i];
+    
+    if (line.match(/^-\s+/)) {
+      const items = [];
+      while (i < lines.length && lines[i].match(/^-\s+/)) {
+        items.push({
+          type: 'listItem',
+          content: [{
+            type: 'paragraph',
+            content: [{ type: 'text', text: lines[i].replace(/^-\s+/, '') }]
+          }]
+        });
+        i++;
+      }
+      content.push({ type: 'bulletList', content: items });
+      continue;
+    }
+    
+    if (line.trim() === '') { i++; continue; }
+    
+    if (line.match(/^[A-Z][^:]+:\s*.+/)) {
+      const [label, ...rest] = line.split(':');
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: label + ': ', marks: [{ type: 'strong' }] },
+          { type: 'text', text: rest.join(':').trim() }
+        ]
+      });
+      i++;
+      continue;
+    }
+    
+    content.push({
+      type: 'paragraph',
+      content: [{ type: 'text', text: line }]
+    });
+    i++;
+  }
+  
+  if (content.length === 0) {
+    content.push({ type: 'paragraph', content: [] });
+  }
+  
+  return { type: 'doc', version: 1, content };
+}
+
+export async function getProtocol(protocolKey) {
+  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${protocolKey}`, {
+    headers: {
+      'Authorization': getAuthHeader(),
+      'Accept': 'application/json'
+    }
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to fetch protocol ${protocolKey}`);
+  }
+  
+  const issue = await response.json();
+  
+  let descriptionText = '';
+  if (issue.fields.description?.content) {
+    descriptionText = issue.fields.description.content
+      .map(block => block.content?.map(item => item.text).join('') || '')
+      .join('\n');
+  }
+  
+  const collectionMatch = descriptionText.match(/Collection File:\s*(\S+\.postman_collection\.json)/);
+  const envMatch = descriptionText.match(/Environment File:\s*(\S+\.postman_environment\.json)/);
+  const reportMatch = descriptionText.match(/reporter-html-export\s+(\S+)\.html/);
+  const repoMatch = descriptionText.match(/https:\/\/github\.com\/[^\s]+/);
+  
+  return {
+    key: protocolKey,
+    summary: issue.fields.summary,
+    collectionFile: collectionMatch ? collectionMatch[1] : null,
+    environmentFile: envMatch ? envMatch[1] : null,
+    reportName: reportMatch ? reportMatch[1] : protocolKey.replace('-', '_'),
+    repoUrl: repoMatch ? repoMatch[0] : null
+  };
+}
+
+async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
+  const projectKey = testPlanKey.split('-')[0];
+  const executionSummary = `Test Execution for Test Plan ${testPlanKey} | ${protocol.summary}`;
+  
+  const description = `Execution Level: ${testLevel}\n` +
+    `Test Plan: ${testPlanKey}\n` +
+    `Test Protocol: ${protocol.key}\n` +
+    `Git Branch: ${evidence.gitBranch}\n` +
+    `Commit SHA: ${evidence.commitSha}\n` +
+    `Newman Version: ${evidence.newmanVersion}\n` +
+    `Execution Timestamp: ${evidence.timestamp}\n` +
+    `Collection: ${protocol.collectionFile}\n` +
+    `Environment: ${protocol.environmentFile}\n` +
+    `Status: ${evidence.status}`;
+
+  const token = await xrayAuthenticate();
+  
+  const payload = {
+    info: {
+      project: projectKey,
+      summary: executionSummary,
+      description: description,
+      startDate: evidence.timestamp,
+      finishDate: new Date().toISOString(),
+      testPlanKey: testPlanKey
+    },
+    tests: [
+      {
+        testKey: protocol.key,
+        status: evidence.status === 'Passed' ? 'PASSED' : 'FAILED',
+        comment: `Execution Level: ${testLevel}\nNewman Version: ${evidence.newmanVersion}\nCollection: ${protocol.collectionFile}`
+      }
+    ]
+  };
+  
+  const response = await fetch(`${XRAY_BASE_URL}/api/v2/import/execution`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to create Test Execution: ${response.status} - ${error}`);
+  }
+  
+  return await response.json();
+}
+
+async function attachFile(issueKey, filePath) {
+  if (!fs.existsSync(filePath)) {
+    console.warn(`   ⚠️  File not found: ${filePath}`);
+    return;
+  }
+  
+  const fileContent = fs.readFileSync(filePath);
+  const fileName = path.basename(filePath);
+  const blob = new Blob([fileContent]);
+  const formData = new FormData();
+  formData.append('file', blob, fileName);
+  
+  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`, {
+    method: 'POST',
+    headers: {
+      'Authorization': getAuthHeader(),
+      'X-Atlassian-Token': 'no-check'
+    },
+    body: formData
+  });
+  
+  if (response.ok) {
+    console.log(`   ✅ Attached: ${fileName}`);
+  } else {
+    console.warn(`   ⚠️  Failed to attach: ${fileName}`);
+  }
+}
+
+/**
+ * Execute a single protocol: run Newman, create Jira Test Execution, attach evidence.
+ * 
+ * @param {string} testPlanKey - e.g. "PF-501"
+ * @param {string} protocolKey - e.g. "PF-502"
+ * @param {string} testLevel - "Dev" | "IV" | "VV"
+ * @returns {Promise<{key: string, status: string}>} - created execution key and pass/fail status
+ */
+export async function executeProtocol(testPlanKey, protocolKey, testLevel) {
+  console.log('\n───────────────────────────────────────────────────────────');
+  console.log(`  Executing: ${protocolKey}  |  Level: ${testLevel}`);
+  console.log('───────────────────────────────────────────────────────────');
+  
+  // Fetch protocol details
+  console.log('\n   Fetching protocol details...');
+  const protocol = await getProtocol(protocolKey);
+  console.log(`   Protocol: ${protocol.summary}`);
+  console.log(`   Collection: ${protocol.collectionFile || '(not found)'}`);
+  console.log(`   Environment: ${protocol.environmentFile || '(not found)'}`);
+  
+  // Resolve collection file path - check collections/ folder
+  let collectionPath = protocol.collectionFile;
+  let envPath = protocol.environmentFile;
+  
+  if (collectionPath) {
+    const inCollections = path.join(COLLECTIONS_DIR, collectionPath);
+    if (fs.existsSync(inCollections)) {
+      collectionPath = inCollections;
+    } else if (!fs.existsSync(collectionPath)) {
+      throw new Error(`Collection file not found: ${collectionPath}\n   Checked: ${inCollections}`);
+    }
+  } else {
+    throw new Error(`Collection file not found in ${protocolKey} description`);
+  }
+  
+  if (envPath) {
+    const inCollections = path.join(COLLECTIONS_DIR, envPath);
+    if (fs.existsSync(inCollections)) {
+      envPath = inCollections;
+    }
+  }
+  
+  // Create output dir for evidence
+  const outputDir = path.join(__dirname, 'output');
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+  
+  // Capture Newman version
+  let newmanVersion;
+  try {
+    newmanVersion = execSync('npx newman -v', { encoding: 'utf8', cwd: __dirname }).trim();
+    fs.writeFileSync(path.join(outputDir, 'newman_version.txt'), newmanVersion);
+  } catch {
+    throw new Error('Newman not installed. Run: npm install newman');
+  }
+  
+  // Get git metadata
+  let gitBranch = 'N/A';
+  let commitSha = 'N/A';
+  try {
+    gitBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+    commitSha = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+  } catch {
+    // Not in a git repo, that's fine
+  }
+  
+  // Run Newman
+  console.log(`\n   Running Newman...`);
+  const jsonReport = path.join(outputDir, `${protocol.reportName}.json`);
+  const htmlReport = path.join(outputDir, `${protocol.reportName}.html`);
+  const newmanCmd = `npx newman run "${collectionPath}"` +
+    (envPath ? ` -e "${envPath}"` : '') +
+    ` --insecure --ignore-redirects` +
+    ` --reporters cli,json,htmlextra` +
+    ` --reporter-json-export "${jsonReport}"` +
+    ` --reporter-htmlextra-export "${htmlReport}"`;
+  
+  let status = 'Passed';
+  let cliOutput = '';
+  try {
+    cliOutput = execSync(newmanCmd, { encoding: 'utf8' });
+    console.log(cliOutput);
+    console.log(`   ✅ Newman completed`);
+  } catch (err) {
+    cliOutput = err.stdout || '';
+    console.log(cliOutput);
+    console.log(`   ⚠️  Newman had failures`);
+    status = 'Failed';
+  }
+  
+  // Save CLI output as the newman report text file
+  const cliReportPath = path.join(outputDir, `${protocol.reportName}_report.txt`);
+  fs.writeFileSync(cliReportPath, cliOutput);
+  
+  // Create metadata
+  const timestamp = new Date().toISOString();
+  const metadata = {
+    testPlanKey, protocolKey, testLevel,
+    gitBranch, commitSha, newmanVersion, timestamp,
+    collectionFile: protocol.collectionFile,
+    environmentFile: protocol.environmentFile,
+    status
+  };
+  const metadataPath = path.join(outputDir, 'run_metadata.json');
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+  
+  // Create Test Execution in Jira
+  console.log(`\n   Creating Test Execution in Jira...`);
+  const execution = await createTestExecution(testPlanKey, protocol, testLevel, {
+    gitBranch, commitSha, newmanVersion, timestamp, status
+  });
+  console.log(`   ✅ Created: ${execution.key}`);
+  
+  // Attach evidence
+  console.log(`\n   Attaching evidence...`);
+  await attachFile(execution.key, path.join(outputDir, 'newman_version.txt'));
+  await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.html`));
+  await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.json`));
+  await attachFile(execution.key, path.join(outputDir, 'run_metadata.json'));
+  
+  console.log(`\n   ✅ Done: ${execution.key} (${status})`);
+  console.log(`   View: ${JIRA_BASE_URL}/browse/${execution.key}`);
+  
+  return { key: execution.key, status, protocol: protocol.summary };
+}
+
+// CLI entrypoint — only runs when called directly
+const isDirectRun = process.argv[1]?.endsWith('execute-protocol.js');
+if (isDirectRun) {
+  const [testPlanKey, protocolKey, testLevel] = process.argv.slice(2);
+  
+  if (!testPlanKey || !protocolKey || !testLevel) {
+    console.error('Usage: node execute-protocol.js <test_plan_key> <protocol_key> <test_level>');
+    console.error('Example: node execute-protocol.js PF-501 PF-502 VV');
+    console.error('\nTest Levels: Dev | IV | VV');
+    process.exit(1);
+  }
+  
+  checkCredentials();
+  
+  executeProtocol(testPlanKey, protocolKey, testLevel)
+    .then(result => {
+      console.log('\n═══════════════════════════════════════════════════════════');
+      console.log('✅ TEST EXECUTION COMPLETE');
+      console.log('═══════════════════════════════════════════════════════════');
+      console.log(`Test Execution: ${result.key}`);
+      console.log(`Status: ${result.status}`);
+      console.log('═══════════════════════════════════════════════════════════\n');
+    })
+    .catch(err => {
+      console.error('\n❌ Error:', err.message);
+      process.exit(1);
+    });
+}
