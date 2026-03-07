@@ -29,6 +29,9 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
 const XRAY_CLIENT_ID = process.env.XRAY_CLIENT_ID;
 const XRAY_CLIENT_SECRET = process.env.XRAY_CLIENT_SECRET;
 const XRAY_BASE_URL = 'https://xray.cloud.getxray.app';
+const JIRA_ASSIGNEE_ACCOUNT_ID = process.env.JIRA_ASSIGNEE_ACCOUNT_ID;
+const TRANSITION_ON_PASS = process.env.TRANSITION_ON_PASS || 'Start Approvals';
+const TRANSITION_ON_FAIL = process.env.TRANSITION_ON_FAIL || 'Done';
 
 let xrayToken = null;
 
@@ -243,15 +246,105 @@ async function attachFile(issueKey, filePath) {
   }
 }
 
+export async function fetchTestPlanMetadata(testPlanKey) {
+  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=labels,fixVersions`, {
+    headers: {
+      'Authorization': getAuthHeader(),
+      'Accept': 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    console.warn(`   ⚠️  Could not fetch Test Plan metadata: ${response.status}`);
+    return { labels: [], fixVersions: [] };
+  }
+
+  const issue = await response.json();
+  return {
+    labels: issue.fields.labels || [],
+    fixVersions: (issue.fields.fixVersions || []).map(v => ({ id: v.id, name: v.name }))
+  };
+}
+
+async function updateExecutionFields(executionKey, { labels, fixVersions, assignee }) {
+  const fields = {};
+
+  if (labels?.length) fields.labels = labels;
+  if (fixVersions?.length) fields.fixVersions = fixVersions;
+  if (assignee) fields.assignee = { accountId: assignee };
+
+  if (Object.keys(fields).length === 0) return;
+
+  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${executionKey}`, {
+    method: 'PUT',
+    headers: {
+      'Authorization': getAuthHeader(),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ fields })
+  });
+
+  if (response.ok || response.status === 204) {
+    if (labels?.length) console.log(`   ✅ Labels set: ${labels.join(', ')}`);
+    if (fixVersions?.length) console.log(`   ✅ Fix versions set: ${fixVersions.map(v => v.name).join(', ')}`);
+    if (assignee) console.log(`   ✅ Assignee set: ${assignee}`);
+  } else {
+    const error = await response.text();
+    console.warn(`   ⚠️  Failed to update execution fields: ${response.status} - ${error}`);
+  }
+}
+
+async function transitionExecution(executionKey, targetStatusName) {
+  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${executionKey}/transitions`, {
+    headers: {
+      'Authorization': getAuthHeader(),
+      'Accept': 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    console.warn(`   ⚠️  Could not fetch transitions for ${executionKey}: ${response.status}`);
+    return;
+  }
+
+  const { transitions } = await response.json();
+  const transition = transitions.find(t =>
+    t.name.toLowerCase() === targetStatusName.toLowerCase()
+  );
+
+  if (!transition) {
+    const available = transitions.map(t => t.name).join(', ');
+    console.warn(`   ⚠️  Transition "${targetStatusName}" not available. Available: ${available}`);
+    return;
+  }
+
+  const transResponse = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${executionKey}/transitions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': getAuthHeader(),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ transition: { id: transition.id } })
+  });
+
+  if (transResponse.ok || transResponse.status === 204) {
+    console.log(`   ✅ Status transitioned to: ${targetStatusName}`);
+  } else {
+    const error = await transResponse.text();
+    console.warn(`   ⚠️  Failed to transition to "${targetStatusName}": ${transResponse.status} - ${error}`);
+  }
+}
+
 /**
  * Execute a single protocol: run Newman, create Jira Test Execution, attach evidence.
  * 
  * @param {string} testPlanKey - e.g. "PF-501"
  * @param {string} protocolKey - e.g. "PF-502"
  * @param {string} testLevel - "Dev" | "IV" | "VV"
+ * @param {object} options - { labels, fixedVersions, assignee, transitionOnPass, transitionOnFail }
  * @returns {Promise<{key: string, status: string}>} - created execution key and pass/fail status
  */
-export async function executeProtocol(testPlanKey, protocolKey, testLevel) {
+export async function executeProtocol(testPlanKey, protocolKey, testLevel, options = {}) {
   console.log('\n───────────────────────────────────────────────────────────');
   console.log(`  Executing: ${protocolKey}  |  Level: ${testLevel}`);
   console.log('───────────────────────────────────────────────────────────');
@@ -361,6 +454,26 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel) {
   await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.html`));
   await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.json`));
   await attachFile(execution.key, path.join(outputDir, 'run_metadata.json'));
+
+  // Update execution fields (labels, fixVersions, assignee)
+  const assignee = options.assignee || JIRA_ASSIGNEE_ACCOUNT_ID;
+  if (options.labels?.length || options.fixVersions?.length || assignee) {
+    console.log(`\n   Updating execution fields...`);
+    await updateExecutionFields(execution.key, {
+      labels: options.labels,
+      fixVersions: options.fixVersions,
+      assignee
+    });
+  }
+
+  // Transition status based on pass/fail
+  const transitionTarget = status === 'Passed'
+    ? (options.transitionOnPass || TRANSITION_ON_PASS)
+    : (options.transitionOnFail || TRANSITION_ON_FAIL);
+  if (transitionTarget) {
+    console.log(`\n   Transitioning status...`);
+    await transitionExecution(execution.key, transitionTarget);
+  }
   
   console.log(`\n   ✅ Done: ${execution.key} (${status})`);
   console.log(`   View: ${JIRA_BASE_URL}/browse/${execution.key}`);
@@ -382,7 +495,8 @@ if (isDirectRun) {
   
   checkCredentials();
   
-  executeProtocol(testPlanKey, protocolKey, testLevel)
+  fetchTestPlanMetadata(testPlanKey)
+    .then(metadata => executeProtocol(testPlanKey, protocolKey, testLevel, metadata))
     .then(result => {
       console.log('\n═══════════════════════════════════════════════════════════');
       console.log('✅ TEST EXECUTION COMPLETE');

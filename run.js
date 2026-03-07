@@ -14,7 +14,7 @@
 
 import readline from 'readline';
 import dotenv from 'dotenv';
-import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol } from './execute-protocol.js';
+import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata } from './execute-protocol.js';
 
 dotenv.config();
 checkCredentials();
@@ -77,7 +77,8 @@ function parseFlags() {
     testPlanKey,
     all: args.includes('--all'),
     level: null,
-    protocolKeys: null
+    protocolKeys: null,
+    assignee: null
   };
   
   const levelIdx = args.indexOf('--level');
@@ -88,6 +89,11 @@ function parseFlags() {
   const protocolIdx = args.indexOf('--protocols');
   if (protocolIdx !== -1 && args[protocolIdx + 1]) {
     flags.protocolKeys = args[protocolIdx + 1].split(',').map(s => s.trim());
+  }
+
+  const assigneeIdx = args.indexOf('--assignee');
+  if (assigneeIdx !== -1 && args[assigneeIdx + 1]) {
+    flags.assignee = args[assigneeIdx + 1];
   }
   
   return flags;
@@ -113,11 +119,14 @@ async function main() {
   console.log('           VERIFICATION AUTOMATION PLATFORM');
   console.log('═══════════════════════════════════════════════════════════');
   
-  // Fetch protocols
+  // Fetch protocols and test plan metadata
   console.log(`\n  Fetching protocols for Test Plan ${testPlanKey}...\n`);
   const { plan, protocols } = await fetchProtocols(testPlanKey);
+  const planMetadata = await fetchTestPlanMetadata(testPlanKey);
   
   console.log(`  Test Plan: ${plan.fields.summary}`);
+  if (planMetadata.labels.length) console.log(`  Labels: ${planMetadata.labels.join(', ')}`);
+  if (planMetadata.fixVersions.length) console.log(`  Fix Versions: ${planMetadata.fixVersions.map(v => v.name).join(', ')}`);
   
   if (protocols.length === 0) {
     console.log('\n  No protocols found. Make sure Test issues with "Protocol" in the summary exist.');
@@ -210,10 +219,15 @@ async function main() {
   
   // Execute each selected protocol
   const results = [];
+  const execOptions = {
+    labels: planMetadata.labels,
+    fixVersions: planMetadata.fixVersions,
+    assignee: flags.assignee
+  };
   
   for (const protocol of selected) {
     try {
-      const result = await executeProtocol(testPlanKey, protocol.key, testLevel);
+      const result = await executeProtocol(testPlanKey, protocol.key, testLevel, execOptions);
       results.push(result);
     } catch (err) {
       console.error(`\n  ❌ Failed: ${protocol.key} - ${err.message}`);
