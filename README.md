@@ -1,19 +1,49 @@
 # Verification Automation Platform
 
-Automates the manual test execution process: creates Jira Test Plans + Protocols, runs Newman collections, and uploads evidence to Jira Test Executions.
+Automates the manual test execution process: creates Jira Test Plans + Protocols, runs Newman collections, and uploads evidence to Jira Test Executions. Inherits metadata (labels, fix versions) from the Test Plan, sets assignee, and transitions issue status automatically.
 
-## Setup
+## First-Time Setup
+
+### Prerequisites
+
+- Node.js (v18+)
+- npm
+- Git
+
+### 1. Install dependencies
 
 ```bash
-cd verification-automation
 npm install
-cp .env.example .env
-# Edit .env with your Jira credentials
 ```
 
-## Demo
+### 2. Configure credentials
 
-For a detailed walkthrough of what happens when you run the demo (Jira fetch, Newman execution, reporters, pass/fail, evidence upload), see **[DEMO_UNDER_THE_HOOD.md](DEMO_UNDER_THE_HOOD.md)**.
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your credentials:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JIRA_EMAIL` | Yes | Email associated with your Jira account |
+| `JIRA_API_TOKEN` | Yes | Jira API token ([create one here](https://id.atlassian.com/manage-profile/security/api-tokens)) |
+| `JIRA_BASE_URL` | Yes | Your Jira instance URL (e.g. `https://your-org.atlassian.net`) |
+| `XRAY_CLIENT_ID` | Yes | Xray Cloud API client ID ([generate in Xray settings](https://docs.getxray.app/display/XRAYCLOUD/Global+Settings%3A+API+Keys)) |
+| `XRAY_CLIENT_SECRET` | Yes | Xray Cloud API client secret |
+| `JIRA_ASSIGNEE_ACCOUNT_ID` | No | Jira account ID to assign Test Executions to. Find it in your Jira profile URL or via the API. |
+| `TRANSITION_ON_PASS` | No | Status to transition to when tests pass (default: `Start Approvals`) |
+| `TRANSITION_ON_FAIL` | No | Status to transition to when tests fail (default: `Done`) |
+
+### 3. Verify connectivity
+
+```bash
+node run.js <TEST_PLAN_KEY>
+```
+
+If credentials are correct, you'll see the test plan name and a list of protocols.
+
+## Usage
 
 ### Step 1: Create Test Plan + Protocols
 
@@ -23,35 +53,46 @@ node create-test-plan.js lc3-15647-config.json
 
 Creates 1 Test Plan and 4 Test Protocols in Jira from the config file. Each protocol has a structured description with collection file, environment file, Newman command, execution steps, and evidence requirements.
 
-Open Jira and show the created Test Plan and one of the Protocols.
+### Step 2: Execute Protocols
 
-### Step 2: Execute a Protocol
-
-```bash
-node run.js <TEST_PLAN_KEY> --protocols <PROTOCOL_KEY> --level VV
-```
-
-Example (one protocol):
+Run a specific protocol:
 
 ```bash
 node run.js PF-515 --protocols PF-516 --level VV
 ```
 
-Example (all protocols):
+Run all protocols:
 
 ```bash
 node run.js PF-515 --all --level VV
 ```
 
+Run with a specific assignee:
+
+```bash
+node run.js PF-515 --all --level VV --assignee 712020:a428f9e7-xxxx
+```
+
+Interactive mode (prompts for protocol and level selection):
+
+```bash
+node run.js PF-515
+```
+
 This will:
 1. Fetch protocol details from Jira
-2. Find the collection and environment files
-3. Run Newman
-4. Create a Test Execution in Jira: `Test Execution for Test Plan PF-515 | LC3 Protocol - Delete User (CAPI API)`
-5. Link it to the Test Plan and Protocol
-6. Attach all evidence
+2. Fetch Test Plan metadata (labels, fix versions)
+3. Find the collection and environment files
+4. Run Newman
+5. Create a Test Execution in Jira (e.g. `Test Execution for Test Plan PF-515 | LC3 Protocol - Delete User (CAPI API)`)
+6. Link it to the Test Plan and Protocol
+7. Attach all evidence files
+8. Set labels, fix versions, and assignee on the Test Execution (inherited from Test Plan)
+9. Transition the Test Execution status (pass -> configurable status, fail -> configurable status)
 
-Open Jira and show the Test Execution with evidence attached.
+### Test Levels
+
+Lilly runs the same tests at 3 levels: `Dev`, `IV` (Informal Verification), `VV` (Formal Verification). The level is recorded in the Test Execution description as metadata.
 
 ## Evidence
 
@@ -64,31 +105,22 @@ Each Test Execution gets 4 files attached automatically:
 | `<protocol>_Results.json` | Raw JSON test results |
 | `run_metadata.json` | Git branch, commit SHA, Newman version, timestamp, test level |
 
-## Other Commands
+## Metadata Inheritance
 
-### Interactive mode (pick which protocols to run)
+The script reads the following fields from the **Test Plan** and copies them to each **Test Execution** it creates:
 
-```bash
-node run.js PF-515
-```
+- **Labels** -- e.g. `VV-R1`, `dsar-capi-regression`. Used by Lilly to filter documentation suites.
+- **Fix Versions** -- e.g. `1.0.2`. Tracks which release the execution belongs to.
+- **Assignee** -- configurable via `--assignee` CLI flag or `JIRA_ASSIGNEE_ACCOUNT_ID` in `.env`.
 
-Shows a numbered list of protocols. Type `all` or `1,3` to select, then pick a test level.
+## Status Transitions
 
-### Run all protocols
+After creating the Test Execution and attaching evidence, the script automatically transitions the issue status:
 
-```bash
-node run.js PF-515 --all --level VV
-```
+- **Tests pass** -> transitions to `TRANSITION_ON_PASS` (default: `Start Approvals`)
+- **Tests fail** -> transitions to `TRANSITION_ON_FAIL` (default: `Done`)
 
-### Run specific protocols by key
-
-```bash
-node run.js PF-515 --protocols PF-516,PF-517 --level VV
-```
-
-### Test levels
-
-Lilly runs the same tests at 3 levels: `Dev`, `IV` (Informal Verification), `VV` (Formal Verification). The level is recorded in the Test Execution description as metadata.
+These are configurable in `.env` to match the target Jira workflow. If a transition name doesn't match any available transition on the issue, the script warns and continues without crashing.
 
 ## Config File
 
@@ -114,13 +146,20 @@ See `lc3-15647-config.json` for the structure. Each protocol defines:
 5. Create Test Execution issue in Jira
 6. Manually type: "Test Execution for Test Plan LC3-15647 | Protocol Name"
 7. Upload evidence files
-8. Repeat
+8. Set labels, fix versions, assignee manually
+9. Change status to Done / Start Approvals manually
+10. Repeat
 
 **Automated:**
 ```bash
-node run.js PF-515 --protocols PF-516 --level VV
+node run.js PF-515 --all --level VV
 ```
 
-## To-do
+## Under the Hood
 
-- [ ] **Test Executions under Test Plan:** Executions created by the script are linked to the Test Plan via Jira issue links but do not appear in Xray's "Test Executions" panel for the plan (e.g. "This test plan hasn't been executed, yet"). Investigate Xray-specific link type or API so executions show under the plan's Test Executions list.
+For a detailed walkthrough of what happens when you run the script (Jira fetch, Newman execution, reporters, pass/fail, evidence upload), see **[process.md](process.md)**.
+
+## Next Steps
+
+- [ ] **Newman -> Postman CLI migration:** Replace Newman with the Postman CLI (`postman collection run`), which is the actively maintained successor with all future product enhancements. Newman is in maintenance mode. Postman CLI now supports HTML reports, which was the previous blocker.
+- [ ] **Test Executions under Test Plan:** Executions created by the script are linked to the Test Plan via Jira issue links but do not appear in Xray's "Test Executions" panel for the plan. Investigate Xray-specific link type or API so executions show under the plan's Test Executions list.
