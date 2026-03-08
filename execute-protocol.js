@@ -247,7 +247,9 @@ async function attachFile(issueKey, filePath) {
 }
 
 export async function fetchTestPlanMetadata(testPlanKey) {
-  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=labels,fixVersions`, {
+  const SPRINT_FIELD = process.env.JIRA_SPRINT_FIELD || 'customfield_10006';
+  const fields = `labels,fixVersions,assignee,status,components,priority,${SPRINT_FIELD}`;
+  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=${fields}`, {
     headers: {
       'Authorization': getAuthHeader(),
       'Accept': 'application/json'
@@ -256,21 +258,34 @@ export async function fetchTestPlanMetadata(testPlanKey) {
 
   if (!response.ok) {
     console.warn(`   ⚠️  Could not fetch Test Plan metadata: ${response.status}`);
-    return { labels: [], fixVersions: [] };
+    return { labels: [], fixVersions: [], assignee: null, status: null, components: [], priority: null, sprint: null };
   }
 
   const issue = await response.json();
+  const f = issue.fields;
+
+  const sprintData = f[SPRINT_FIELD];
+  const activeSprint = Array.isArray(sprintData)
+    ? sprintData.find(s => s.state === 'active') || sprintData[0]
+    : sprintData;
+
   return {
-    labels: issue.fields.labels || [],
-    fixVersions: (issue.fields.fixVersions || []).map(v => ({ id: v.id, name: v.name }))
+    labels: f.labels || [],
+    fixVersions: (f.fixVersions || []).map(v => ({ id: v.id, name: v.name })),
+    assignee: f.assignee ? { accountId: f.assignee.accountId, displayName: f.assignee.displayName } : null,
+    status: f.status ? { id: f.status.id, name: f.status.name } : null,
+    components: (f.components || []).map(c => ({ id: c.id, name: c.name })),
+    priority: f.priority ? { id: f.priority.id, name: f.priority.name } : null,
+    sprint: activeSprint ? { id: activeSprint.id, name: activeSprint.name, state: activeSprint.state } : null
   };
 }
 
-async function updateExecutionFields(executionKey, { labels, fixVersions, assignee }) {
+async function updateExecutionFields(executionKey, { labels, fixVersions, assignee, components }) {
   const fields = {};
 
   if (labels?.length) fields.labels = labels;
   if (fixVersions?.length) fields.fixVersions = fixVersions;
+  if (components?.length) fields.components = components;
   if (assignee) fields.assignee = { accountId: assignee };
 
   if (Object.keys(fields).length === 0) return;
@@ -287,6 +302,7 @@ async function updateExecutionFields(executionKey, { labels, fixVersions, assign
   if (response.ok || response.status === 204) {
     if (labels?.length) console.log(`   ✅ Labels set: ${labels.join(', ')}`);
     if (fixVersions?.length) console.log(`   ✅ Fix versions set: ${fixVersions.map(v => v.name).join(', ')}`);
+    if (components?.length) console.log(`   ✅ Components set: ${components.map(c => c.name).join(', ')}`);
     if (assignee) console.log(`   ✅ Assignee set: ${assignee}`);
   } else {
     const error = await response.text();
@@ -341,7 +357,7 @@ async function transitionExecution(executionKey, targetStatusName) {
  * @param {string} testPlanKey - e.g. "PF-501"
  * @param {string} protocolKey - e.g. "PF-502"
  * @param {string} testLevel - "Dev" | "IV" | "VV"
- * @param {object} options - { labels, fixedVersions, assignee, transitionOnPass, transitionOnFail }
+ * @param {object} options - { labels, fixVersions, components, assignee, testPlanAssignee, transitionOnPass, transitionOnFail }
  * @returns {Promise<{key: string, status: string}>} - created execution key and pass/fail status
  */
 export async function executeProtocol(testPlanKey, protocolKey, testLevel, options = {}) {
@@ -455,13 +471,16 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.json`));
   await attachFile(execution.key, path.join(outputDir, 'run_metadata.json'));
 
-  // Update execution fields (labels, fixVersions, assignee)
-  const assignee = options.assignee || JIRA_ASSIGNEE_ACCOUNT_ID;
-  if (options.labels?.length || options.fixVersions?.length || assignee) {
+  // Update execution fields (labels, fixVersions, components, assignee)
+  // Assignee priority: explicit CLI flag > env var > inherited from test plan
+  const assignee = options.assignee || JIRA_ASSIGNEE_ACCOUNT_ID || options.testPlanAssignee;
+  const hasFields = options.labels?.length || options.fixVersions?.length || options.components?.length || assignee;
+  if (hasFields) {
     console.log(`\n   Updating execution fields...`);
     await updateExecutionFields(execution.key, {
       labels: options.labels,
       fixVersions: options.fixVersions,
+      components: options.components,
       assignee
     });
   }
@@ -496,7 +515,12 @@ if (isDirectRun) {
   checkCredentials();
   
   fetchTestPlanMetadata(testPlanKey)
-    .then(metadata => executeProtocol(testPlanKey, protocolKey, testLevel, metadata))
+    .then(metadata => executeProtocol(testPlanKey, protocolKey, testLevel, {
+      labels: metadata.labels,
+      fixVersions: metadata.fixVersions,
+      components: metadata.components,
+      testPlanAssignee: metadata.assignee?.accountId || null
+    }))
     .then(result => {
       console.log('\n═══════════════════════════════════════════════════════════');
       console.log('✅ TEST EXECUTION COMPLETE');

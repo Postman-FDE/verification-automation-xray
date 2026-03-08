@@ -222,7 +222,9 @@ async function main() {
   const execOptions = {
     labels: planMetadata.labels,
     fixVersions: planMetadata.fixVersions,
-    assignee: flags.assignee
+    components: planMetadata.components,
+    assignee: flags.assignee,
+    testPlanAssignee: planMetadata.assignee?.accountId || null
   };
   
   for (const protocol of selected) {
