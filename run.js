@@ -85,6 +85,10 @@ function parseFlags() {
   if (levelIdx !== -1 && args[levelIdx + 1]) {
     flags.level = args[levelIdx + 1];
   }
+
+  if (args.includes('--dev')) flags.level = 'Dev';
+  if (args.includes('--iv'))  flags.level = 'IV';
+  if (args.includes('--vv'))  flags.level = 'VV';
   
   const protocolIdx = args.indexOf('--protocols');
   if (protocolIdx !== -1 && args[protocolIdx + 1]) {
@@ -108,7 +112,8 @@ async function main() {
     console.error('Usage:');
     console.error('  Interactive:      node run.js <test_plan_key>');
     console.error('  Non-interactive:  node run.js <test_plan_key> --all --level VV');
-    console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --level VV');
+    console.error('  Shorthand:        node run.js <test_plan_key> --all --dev|--iv|--vv');
+    console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --vv');
     process.exit(1);
   }
   

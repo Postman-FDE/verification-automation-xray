@@ -22,6 +22,7 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COLLECTIONS_DIR = path.join(__dirname, 'collections');
+const ENVIRONMENTS_DIR = path.join(__dirname, 'postman-environments');
 
 const JIRA_EMAIL = process.env.JIRA_EMAIL;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
@@ -387,11 +388,17 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     throw new Error(`Collection file not found in ${protocolKey} description`);
   }
   
-  if (envPath) {
+  // Resolve environment file: level-specific file takes priority over Jira description
+  const levelEnvFile = path.join(ENVIRONMENTS_DIR, `${testLevel}.postman_environment.json`);
+  if (fs.existsSync(levelEnvFile)) {
+    envPath = levelEnvFile;
+    console.log(`   Using ${testLevel} environment: ${path.basename(levelEnvFile)}`);
+  } else if (envPath) {
     const inCollections = path.join(COLLECTIONS_DIR, envPath);
     if (fs.existsSync(inCollections)) {
       envPath = inCollections;
     }
+    console.log(`   Using default environment: ${path.basename(envPath)}`);
   }
   
   // Create output dir for evidence
@@ -451,7 +458,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     testPlanKey, protocolKey, testLevel,
     gitBranch, commitSha, newmanVersion, timestamp,
     collectionFile: protocol.collectionFile,
-    environmentFile: protocol.environmentFile,
+    environmentFile: path.basename(envPath),
     status
   };
   const metadataPath = path.join(outputDir, 'run_metadata.json');
