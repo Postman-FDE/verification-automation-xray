@@ -16,6 +16,7 @@ import readline from 'readline';
 import { program } from 'commander';
 import dotenv from 'dotenv';
 import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata } from './execute-protocol.js';
+import { parseInteractiveSelection, resolveProtocolIndices, resolveTestLevel } from './run-selection.js';
 
 dotenv.config();
 checkCredentials();
@@ -149,14 +150,7 @@ async function main() {
     // Select protocols
     console.log('');
     const selection = await prompt(rl, '  Which protocols to run? (all, or comma-separated: 1,3): ');
-
-    if (selection.toLowerCase() === 'all') {
-      selectedIndices = [...protocols.keys()];
-    } else {
-      selectedIndices = selection.split(',')
-        .map(s => parseInt(s.trim()) - 1)
-        .filter(i => i >= 0 && i < protocols.length);
-    }
+    selectedIndices = parseInteractiveSelection(selection, protocols);
 
     if (selectedIndices.length === 0) {
       console.log('\n  No valid protocols selected.');
@@ -172,13 +166,9 @@ async function main() {
     console.log('');
     const levelInput = await prompt(rl, '  Test level number: ');
 
-    const levelIdx = parseInt(levelInput) - 1;
-    if (levelIdx >= 0 && levelIdx < TEST_LEVELS.length) {
-      testLevel = TEST_LEVELS[levelIdx];
-    } else if (TEST_LEVELS.includes(levelInput)) {
-      testLevel = levelInput;
-    } else {
-      console.log('\n  Invalid test level.');
+    testLevel = resolveTestLevel(levelInput, TEST_LEVELS);
+    if (!testLevel) {
+      console.log(`\n  Invalid test level. Must be one of: ${TEST_LEVELS.join(', ')}`);
       rl.close();
       process.exit(1);
     }
@@ -188,23 +178,14 @@ async function main() {
   } else {
     // Non-interactive mode
     if (flags.all) {
-      selectedIndices = protocols.map((_, i) => i);
+      selectedIndices = [...protocols.keys()];
     } else {
-      // Match by key (e.g. PF-502) or by list number (e.g. 1)
-      selectedIndices = flags.protocolKeys
-        .map(input => {
-          const byKey = protocols.findIndex(p => p.key === input.toUpperCase());
-          if (byKey !== -1) return byKey;
-          const byNumber = parseInt(input) - 1;
-          if (byNumber >= 0 && byNumber < protocols.length) return byNumber;
-          return -1;
-        })
-        .filter(i => i !== -1);
+      selectedIndices = resolveProtocolIndices(flags.protocolKeys, protocols);
     }
 
-    testLevel = flags.level;
-    if (!testLevel || !TEST_LEVELS.includes(testLevel)) {
-      console.error(`\n  Invalid test level ${testLevel}. Must be one of: ${TEST_LEVELS.join(', ')}`);
+    testLevel = flags.level ? resolveTestLevel(flags.level, TEST_LEVELS) : null;
+    if (!testLevel) {
+      console.error(`\n  Invalid test level "${flags.level}". Must be one of: ${TEST_LEVELS.join(', ')}`);
       process.exit(1);
     }
   }
