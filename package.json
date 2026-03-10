@@ -9,6 +9,7 @@
     "run": "node run.js"
   },
   "dependencies": {
+    "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "newman": "^6.2.1",
     "newman-reporter-htmlextra": "^1.23.1",
