@@ -141,19 +141,48 @@ After creating the Test Execution and attaching evidence, the script automatical
 
 These are configurable in `.env` to match the target Jira workflow. If a transition name doesn't match any available transition on the issue, the script warns and continues without crashing.
 
+## Protocol Description Requirements
+
+The automation parses the Jira **Test Protocol description** to find which collection to run. Protocols must follow this format in their description:
+
+**Required:**
+
+| Requirement | Format | Example |
+|-------------|--------|---------|
+| Test must be linked to the Test Plan in Xray | Add tests via Xray's "Add Tests" in the Test Plan | Tests tab on the Test Plan issue |
+| `Collection File:` in description | Must end in `.postman_collection.json` | `Collection File: Order_API_Create_Order.postman_collection.json` |
+
+The tool discovers tests via the Xray API — it queries for all tests linked to the given Test Plan. The collection file must exist in the `collections/` folder. If `Collection File:` is missing or the file is not found, the script will stop with an error.
+
+**Optional fields (parsed if present):**
+
+| Field | Format | What It Does |
+|-------|--------|-------------|
+| `Environment File:` | Must end in `.postman_environment.json` | Fallback env file if no level-specific file exists in `postman-environments/` |
+| `reporter-html-export <name>.html` | In the Newman command template | Sets the report file name. Defaults to the protocol key (e.g. `PF_629`) |
+| GitHub URL | `https://github.com/...` | Stored in protocol metadata |
+
+**Example protocol description:**
+
+```
+## Protocol Library
+Collection File:
+Order_API_Create_Order.postman_collection.json
+
+Environment File:
+Dev.postman_environment.json
+
+## Required Environment Variables
+1. orderBaseUrl
+2. tenantId
+3. Order_Client_Id
+```
+
+The environment file in the description is a fallback — when you run with `--dev`, `--iv`, or `--vv`, the tool uses the level-specific file from `postman-environments/` instead.
+
 ## Config File
 
-See `lc3-15647-config.json` for the structure. Each protocol defines:
-- Summary
-- Test objective
-- Test code location (GitHub URL)
-- Collection file name
-- Environment file name
-- Newman command template
-- Required environment variables
-- Execution steps
-- Expected results
-- Evidence checklist
+See `lc3-15647-config.json` or `order-mgmt-config.json` for the structure. The config is used by `create-test-plan.js` to create the Test Plan and Protocols in Jira with properly formatted descriptions.
 
 ## What This Replaces
 

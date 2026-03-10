@@ -23,11 +23,9 @@ checkCredentials();
 
 const JIRA_BASE_URL = getJiraBaseUrl();
 
-// Fetch all Test issues in the same project created around the test plan
+// Fetch tests linked to the test plan via Xray GraphQL
 async function fetchProtocols(testPlanKey) {
-  const projectKey = testPlanKey.split('-')[0];
-
-  // Get the test plan first to find its creation date
+  // Get the test plan summary from Jira
   const planResponse = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=summary,created`, {
     headers: {
       'Authorization': getAuthHeader(),
@@ -41,25 +39,47 @@ async function fetchProtocols(testPlanKey) {
 
   const plan = await planResponse.json();
 
-  // Search for Test issues in the same project
-  const jql = `project = "${projectKey}" AND issuetype = Test AND summary ~ "Protocol" ORDER BY key ASC`;
-  const url = `${JIRA_BASE_URL}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&fields=key,summary&maxResults=50`;
-
-  const response = await fetch(url, {
-    headers: {
-      'Authorization': getAuthHeader(),
-      'Accept': 'application/json'
-    }
+  // Authenticate with Xray
+  const authResp = await fetch('https://xray.cloud.getxray.app/api/v2/authenticate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: process.env.XRAY_CLIENT_ID,
+      client_secret: process.env.XRAY_CLIENT_SECRET
+    })
   });
 
-  if (!response.ok) {
-    throw new Error(`Failed to search protocols: ${response.status}`);
+  if (!authResp.ok) {
+    throw new Error(`Xray auth failed: ${authResp.status}`);
   }
 
-  const data = await response.json();
-  const protocols = (data.issues || []).map(issue => ({
-    key: issue.key,
-    summary: issue.fields.summary
+  const xrayToken = (await authResp.text()).replace(/"/g, '');
+
+  // Query Xray GraphQL for tests linked to this test plan
+  const graphqlQuery = {
+    query: `{ getTestPlans(limit: 1, jql: "key = ${testPlanKey}") { results { tests(limit: 100) { results { issueId jira(fields: ["key", "summary"]) } } } } }`
+  };
+
+  const gqlResp = await fetch('https://xray.cloud.getxray.app/api/v2/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${xrayToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(graphqlQuery)
+  });
+
+  if (!gqlResp.ok) {
+    throw new Error(`Xray GraphQL query failed: ${gqlResp.status}`);
+  }
+
+  const gqlData = await gqlResp.json();
+  const testPlanResults = gqlData.data?.getTestPlans?.results?.[0];
+  const tests = testPlanResults?.tests?.results || [];
+
+  const protocols = tests.map(t => ({
+    key: t.jira.key,
+    summary: t.jira.summary
   }));
 
   return { plan, protocols };
@@ -128,7 +148,7 @@ async function main() {
   if (planMetadata.fixVersions.length) console.log(`  Fix Versions: ${planMetadata.fixVersions.map(v => v.name).join(', ')}`);
 
   if (protocols.length === 0) {
-    console.log('\n  No protocols found. Make sure Test issues with "Protocol" in the summary exist.');
+    console.log('\n  No tests found linked to this Test Plan. Add tests via Xray in Jira.');
     process.exit(0);
   }
 
