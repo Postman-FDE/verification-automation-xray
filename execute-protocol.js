@@ -2,13 +2,13 @@
 
 /**
  * Execute Test Protocol and create Test Execution in Jira
- * 
+ *
  * Standalone usage:
  *   node execute-protocol.js <test_plan_key> <protocol_key> <test_level>
- * 
+ *
  * Example:
  *   node execute-protocol.js PF-501 PF-502 VV
- * 
+ *
  * Also importable by run.js for interactive CLI use.
  */
 
@@ -38,7 +38,7 @@ let xrayToken = null;
 
 async function xrayAuthenticate() {
   if (xrayToken) return xrayToken;
-  
+
   const response = await fetch(`${XRAY_BASE_URL}/api/v2/authenticate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -47,11 +47,11 @@ async function xrayAuthenticate() {
       client_secret: XRAY_CLIENT_SECRET
     })
   });
-  
+
   if (!response.ok) {
     throw new Error(`Xray auth failed: ${response.status}`);
   }
-  
+
   const token = await response.text();
   xrayToken = token.replace(/"/g, '');
   return xrayToken;
@@ -65,6 +65,57 @@ export function getAuthHeader() {
 
 export function getJiraBaseUrl() {
   return JIRA_BASE_URL;
+}
+
+/** Jira REST request with auth. path is full URL or path (e.g. /rest/api/3/issue/X). */
+async function jiraRequest(path, options = {}) {
+  const url = path.startsWith('http') ? path : `${JIRA_BASE_URL}${path}`;
+  const headers = {
+    'Authorization': getAuthHeader(),
+    'Accept': 'application/json',
+    ...options.headers
+  };
+  if (options.body !== undefined && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+    options = { ...options, body: JSON.stringify(options.body) };
+  }
+  return fetch(url, { ...options, headers });
+}
+
+/** Jira REST request that returns JSON and throws on non-OK. */
+async function jiraJson(path, options = {}) {
+  const res = await jiraRequest(path, options);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Jira request failed: ${res.status} - ${text}`);
+  }
+  return res.json();
+}
+
+/** Xray API request with Bearer auth. path is full URL or path under XRAY_BASE_URL. */
+async function xrayRequest(path, options = {}) {
+  const url = path.startsWith('http') ? path : `${XRAY_BASE_URL}${path}`;
+  const token = await xrayAuthenticate();
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    ...options.headers
+  };
+  if (options.body !== undefined && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+    options = { ...options, body: JSON.stringify(options.body) };
+  }
+  return fetch(url, { ...options, headers });
+}
+
+/** Xray API request that returns JSON and throws on non-OK. */
+async function xrayJson(path, options = {}) {
+  const res = await xrayRequest(path, options);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Xray request failed: ${res.status} - ${text}`);
+  }
+  return res.json();
 }
 
 export function checkCredentials() {
@@ -82,10 +133,10 @@ function textToADF(text) {
   const lines = text.split('\n');
   const content = [];
   let i = 0;
-  
+
   while (i < lines.length) {
     const line = lines[i];
-    
+
     if (line.match(/^-\s+/)) {
       const items = [];
       while (i < lines.length && lines[i].match(/^-\s+/)) {
@@ -101,9 +152,9 @@ function textToADF(text) {
       content.push({ type: 'bulletList', content: items });
       continue;
     }
-    
+
     if (line.trim() === '') { i++; continue; }
-    
+
     if (line.match(/^[A-Z][^:]+:\s*.+/)) {
       const [label, ...rest] = line.split(':');
       content.push({
@@ -116,47 +167,36 @@ function textToADF(text) {
       i++;
       continue;
     }
-    
+
     content.push({
       type: 'paragraph',
       content: [{ type: 'text', text: line }]
     });
     i++;
   }
-  
+
   if (content.length === 0) {
     content.push({ type: 'paragraph', content: [] });
   }
-  
+
   return { type: 'doc', version: 1, content };
 }
 
 export async function getProtocol(protocolKey) {
-  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${protocolKey}`, {
-    headers: {
-      'Authorization': getAuthHeader(),
-      'Accept': 'application/json'
-    }
-  });
-  
-  if (!response.ok) {
-    throw new Error(`Failed to fetch protocol ${protocolKey}`);
-  }
-  
-  const issue = await response.json();
-  
+  const issue = await jiraJson(`/rest/api/3/issue/${protocolKey}`);
+
   let descriptionText = '';
   if (issue.fields.description?.content) {
     descriptionText = issue.fields.description.content
       .map(block => block.content?.map(item => item.text).join('') || '')
       .join('\n');
   }
-  
+
   const collectionMatch = descriptionText.match(/Collection File:\s*(\S+\.postman_collection\.json)/);
   const envMatch = descriptionText.match(/Environment File:\s*(\S+\.postman_environment\.json)/);
   const reportMatch = descriptionText.match(/reporter-html-export\s+(\S+)\.html/);
   const repoMatch = descriptionText.match(/https:\/\/github\.com\/[^\s]+/);
-  
+
   return {
     key: protocolKey,
     summary: issue.fields.summary,
@@ -170,7 +210,7 @@ export async function getProtocol(protocolKey) {
 async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
   const projectKey = testPlanKey.split('-')[0];
   const executionSummary = `Test Execution for Test Plan ${testPlanKey} | ${protocol.summary}`;
-  
+
   const description = `Execution Level: ${testLevel}\n` +
     `Test Plan: ${testPlanKey}\n` +
     `Test Protocol: ${protocol.key}\n` +
@@ -182,8 +222,6 @@ async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
     `Environment: ${protocol.environmentFile}\n` +
     `Status: ${evidence.status}`;
 
-  const token = await xrayAuthenticate();
-  
   const payload = {
     info: {
       project: projectKey,
@@ -201,22 +239,8 @@ async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
       }
     ]
   };
-  
-  const response = await fetch(`${XRAY_BASE_URL}/api/v2/import/execution`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-  
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to create Test Execution: ${response.status} - ${error}`);
-  }
-  
-  return await response.json();
+
+  return xrayJson('/api/v2/import/execution', { method: 'POST', body: payload });
 }
 
 async function attachFile(issueKey, filePath) {
@@ -224,22 +248,19 @@ async function attachFile(issueKey, filePath) {
     console.warn(`   ⚠️  File not found: ${filePath}`);
     return;
   }
-  
+
   const fileContent = fs.readFileSync(filePath);
   const fileName = path.basename(filePath);
   const blob = new Blob([fileContent]);
   const formData = new FormData();
   formData.append('file', blob, fileName);
-  
-  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`, {
+
+  const response = await jiraRequest(`/rest/api/3/issue/${issueKey}/attachments`, {
     method: 'POST',
-    headers: {
-      'Authorization': getAuthHeader(),
-      'X-Atlassian-Token': 'no-check'
-    },
+    headers: { 'X-Atlassian-Token': 'no-check' },
     body: formData
   });
-  
+
   if (response.ok) {
     console.log(`   ✅ Attached: ${fileName}`);
   } else {
@@ -250,12 +271,7 @@ async function attachFile(issueKey, filePath) {
 export async function fetchTestPlanMetadata(testPlanKey) {
   const SPRINT_FIELD = process.env.JIRA_SPRINT_FIELD || 'customfield_10006';
   const fields = `labels,fixVersions,assignee,status,components,priority,${SPRINT_FIELD}`;
-  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=${fields}`, {
-    headers: {
-      'Authorization': getAuthHeader(),
-      'Accept': 'application/json'
-    }
-  });
+  const response = await jiraRequest(`/rest/api/3/issue/${testPlanKey}?fields=${fields}`);
 
   if (!response.ok) {
     console.warn(`   ⚠️  Could not fetch Test Plan metadata: ${response.status}`);
@@ -291,13 +307,9 @@ async function updateExecutionFields(executionKey, { labels, fixVersions, assign
 
   if (Object.keys(fields).length === 0) return;
 
-  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${executionKey}`, {
+  const response = await jiraRequest(`/rest/api/3/issue/${executionKey}`, {
     method: 'PUT',
-    headers: {
-      'Authorization': getAuthHeader(),
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ fields })
+    body: { fields }
   });
 
   if (response.ok || response.status === 204) {
@@ -312,13 +324,7 @@ async function updateExecutionFields(executionKey, { labels, fixVersions, assign
 }
 
 async function transitionExecution(executionKey, targetStatusName) {
-  const response = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${executionKey}/transitions`, {
-    headers: {
-      'Authorization': getAuthHeader(),
-      'Accept': 'application/json'
-    }
-  });
-
+  const response = await jiraRequest(`/rest/api/3/issue/${executionKey}/transitions`);
   if (!response.ok) {
     console.warn(`   ⚠️  Could not fetch transitions for ${executionKey}: ${response.status}`);
     return;
@@ -328,20 +334,15 @@ async function transitionExecution(executionKey, targetStatusName) {
   const transition = transitions.find(t =>
     t.name.toLowerCase() === targetStatusName.toLowerCase()
   );
-
   if (!transition) {
     const available = transitions.map(t => t.name).join(', ');
     console.warn(`   ⚠️  Transition "${targetStatusName}" not available. Available: ${available}`);
     return;
   }
 
-  const transResponse = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${executionKey}/transitions`, {
+  const transResponse = await jiraRequest(`/rest/api/3/issue/${executionKey}/transitions`, {
     method: 'POST',
-    headers: {
-      'Authorization': getAuthHeader(),
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ transition: { id: transition.id } })
+    body: { transition: { id: transition.id } }
   });
 
   if (transResponse.ok || transResponse.status === 204) {
@@ -354,7 +355,7 @@ async function transitionExecution(executionKey, targetStatusName) {
 
 /**
  * Execute a single protocol: run Newman, create Jira Test Execution, attach evidence.
- * 
+ *
  * @param {string} testPlanKey - e.g. "PF-501"
  * @param {string} protocolKey - e.g. "PF-502"
  * @param {string} testLevel - "Dev" | "IV" | "VV"
@@ -365,18 +366,18 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   console.log('\n───────────────────────────────────────────────────────────');
   console.log(`  Executing: ${protocolKey}  |  Level: ${testLevel}`);
   console.log('───────────────────────────────────────────────────────────');
-  
+
   // Fetch protocol details
   console.log('\n   Fetching protocol details...');
   const protocol = await getProtocol(protocolKey);
   console.log(`   Protocol: ${protocol.summary}`);
   console.log(`   Collection: ${protocol.collectionFile || '(not found)'}`);
   console.log(`   Environment: ${protocol.environmentFile || '(not found)'}`);
-  
+
   // Resolve collection file path - check collections/ folder
   let collectionPath = protocol.collectionFile;
   let envPath = protocol.environmentFile;
-  
+
   if (collectionPath) {
     const inCollections = path.join(COLLECTIONS_DIR, collectionPath);
     if (fs.existsSync(inCollections)) {
@@ -387,7 +388,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   } else {
     throw new Error(`Collection file not found in ${protocolKey} description`);
   }
-  
+
   // Resolve environment file: level-specific file takes priority over Jira description
   const levelEnvFile = path.join(ENVIRONMENTS_DIR, `${testLevel}.postman_environment.json`);
   if (fs.existsSync(levelEnvFile)) {
@@ -400,11 +401,11 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     }
     console.log(`   Using default environment: ${path.basename(envPath)}`);
   }
-  
+
   // Create output dir for evidence
   const outputDir = path.join(__dirname, 'output');
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
-  
+  if (!fs.existsSync(outputDir)) { fs.mkdirSync(outputDir); }
+
   // Capture Newman version
   let newmanVersion;
   try {
@@ -413,7 +414,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   } catch {
     throw new Error('Newman not installed. Run: npm install newman');
   }
-  
+
   // Get git metadata
   let gitBranch = 'N/A';
   let commitSha = 'N/A';
@@ -423,7 +424,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   } catch {
     // Not in a git repo, that's fine
   }
-  
+
   // Run Newman
   console.log(`\n   Running Newman...`);
   const jsonReport = path.join(outputDir, `${protocol.reportName}.json`);
@@ -434,7 +435,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     ` --reporters cli,json,htmlextra` +
     ` --reporter-json-export "${jsonReport}"` +
     ` --reporter-htmlextra-export "${htmlReport}"`;
-  
+
   let status = 'Passed';
   let cliOutput = '';
   try {
@@ -447,11 +448,11 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     console.log(`   ⚠️  Newman had failures`);
     status = 'Failed';
   }
-  
+
   // Save CLI output as the newman report text file
   const cliReportPath = path.join(outputDir, `${protocol.reportName}_report.txt`);
   fs.writeFileSync(cliReportPath, cliOutput);
-  
+
   // Create metadata
   const timestamp = new Date().toISOString();
   const metadata = {
@@ -463,14 +464,14 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   };
   const metadataPath = path.join(outputDir, 'run_metadata.json');
   fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
-  
+
   // Create Test Execution in Jira
   console.log(`\n   Creating Test Execution in Jira...`);
   const execution = await createTestExecution(testPlanKey, protocol, testLevel, {
     gitBranch, commitSha, newmanVersion, timestamp, status
   });
   console.log(`   ✅ Created: ${execution.key}`);
-  
+
   // Attach evidence
   console.log(`\n   Attaching evidence...`);
   await attachFile(execution.key, path.join(outputDir, 'newman_version.txt'));
@@ -500,10 +501,10 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     console.log(`\n   Transitioning status...`);
     await transitionExecution(execution.key, transitionTarget);
   }
-  
+
   console.log(`\n   ✅ Done: ${execution.key} (${status})`);
   console.log(`   View: ${JIRA_BASE_URL}/browse/${execution.key}`);
-  
+
   return { key: execution.key, status, protocol: protocol.summary };
 }
 
@@ -511,16 +512,16 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
 const isDirectRun = process.argv[1]?.endsWith('execute-protocol.js');
 if (isDirectRun) {
   const [testPlanKey, protocolKey, testLevel] = process.argv.slice(2);
-  
+
   if (!testPlanKey || !protocolKey || !testLevel) {
     console.error('Usage: node execute-protocol.js <test_plan_key> <protocol_key> <test_level>');
     console.error('Example: node execute-protocol.js PF-501 PF-502 VV');
     console.error('\nTest Levels: Dev | IV | VV');
     process.exit(1);
   }
-  
+
   checkCredentials();
-  
+
   fetchTestPlanMetadata(testPlanKey)
     .then(metadata => executeProtocol(testPlanKey, protocolKey, testLevel, {
       labels: metadata.labels,
