@@ -101,6 +101,10 @@ async function xrayRequest(path, options = {}) {
     'Content-Type': 'application/json',
     ...options.headers
   };
+  if (options.body !== undefined && typeof options.body === 'object' && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+    options = { ...options, body: JSON.stringify(options.body) };
+  }
   return fetch(url, { ...options, headers });
 }
 
