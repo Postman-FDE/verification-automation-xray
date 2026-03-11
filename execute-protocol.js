@@ -432,9 +432,9 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   const newmanCmd = `npx newman run "${collectionPath}"` +
     (envPath ? ` -e "${envPath}"` : '') +
     ` --insecure --ignore-redirects` +
-    ` --reporters cli,json,htmlextra` +
+    ` --reporters cli,json,html` +
     ` --reporter-json-export "${jsonReport}"` +
-    ` --reporter-htmlextra-export "${htmlReport}"`;
+    ` --reporter-html-export "${htmlReport}"`;
 
   let status = 'Passed';
   let cliOutput = '';
