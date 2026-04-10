@@ -13,10 +13,16 @@
  */
 
 import readline from 'readline';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { program } from 'commander';
 import dotenv from 'dotenv';
 import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata } from './execute-protocol.js';
 import { parseInteractiveSelection, resolveProtocolIndices, resolveTestLevel } from './run-selection.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 checkCredentials();
@@ -96,7 +102,7 @@ function parseFlags() {
   program
     .argument('<testPlanKey>', 'Jira Test Plan key (e.g. PF-501)')
     .option('--all', 'run all protocols non-interactively')
-    .option('--level <level>', 'verification level (Dev, IV, VV)')
+    .option('--level <level>', `verification level (${TEST_LEVELS.join(', ') || 'none found'})`)
     .option('--dev', 'shortcut for --level Dev')
     .option('--iv', 'shortcut for --level IV')
     .option('--vv', 'shortcut for --level VV')
@@ -117,7 +123,17 @@ function parseFlags() {
   };
 }
 
-const TEST_LEVELS = ['Dev', 'IV', 'VV'];
+const ENVIRONMENTS_DIR = path.join(__dirname, 'postman-environments');
+
+function discoverTestLevels() {
+  if (!fs.existsSync(ENVIRONMENTS_DIR)) return [];
+  return fs.readdirSync(ENVIRONMENTS_DIR)
+    .filter(f => f.endsWith('.postman_environment.json'))
+    .map(f => f.replace('.postman_environment.json', ''))
+    .sort();
+}
+
+const TEST_LEVELS = discoverTestLevels();
 
 async function main() {
   const flags = parseFlags();
@@ -125,9 +141,8 @@ async function main() {
   if (!flags.testPlanKey || flags.testPlanKey.startsWith('--')) {
     console.error('Usage:');
     console.error('  Interactive:      node run.js <test_plan_key>');
-    console.error('  Non-interactive:  node run.js <test_plan_key> --all --level VV');
-    console.error('  Shorthand:        node run.js <test_plan_key> --all --dev|--iv|--vv');
-    console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --vv');
+    console.error(`  Non-interactive:  node run.js <test_plan_key> --all --level <${TEST_LEVELS.join('|') || 'level'}>`);
+    console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --level <level>');
     process.exit(1);
   }
 
@@ -179,16 +194,22 @@ async function main() {
     }
 
     // Select test level
+    if (TEST_LEVELS.length === 0) {
+      console.log('\n  No environment files found in postman-environments/.');
+      console.log('  Add files named <Level>.postman_environment.json');
+      rl.close();
+      process.exit(1);
+    }
     console.log('\n  Select test level:');
     TEST_LEVELS.forEach((level, i) => {
       console.log(`    [${i + 1}] ${level}`);
     });
     console.log('');
-    const levelInput = await prompt(rl, '  Test level number: ');
+    const levelInput = await prompt(rl, '  Test level number or name: ');
 
     testLevel = resolveTestLevel(levelInput, TEST_LEVELS);
     if (!testLevel) {
-      console.log(`\n  Invalid test level. Must be one of: ${TEST_LEVELS.join(', ')}`);
+      console.log(`\n  Invalid test level. Available: ${TEST_LEVELS.join(', ')}`);
       rl.close();
       process.exit(1);
     }
@@ -205,7 +226,7 @@ async function main() {
 
     testLevel = flags.level ? resolveTestLevel(flags.level, TEST_LEVELS) : null;
     if (!testLevel) {
-      console.error(`\n  Invalid test level "${flags.level}". Must be one of: ${TEST_LEVELS.join(', ')}`);
+      console.error(`\n  Invalid test level "${flags.level}". Available: ${TEST_LEVELS.join(', ') || '(no environments found)'}`);
       process.exit(1);
     }
   }
