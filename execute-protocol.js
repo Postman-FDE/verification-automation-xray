@@ -192,7 +192,7 @@ export async function getProtocol(protocolKey) {
       .join('\n');
   }
 
-  const collectionMatch = descriptionText.match(/Collection File:\s*(\S+\.postman_collection\.json)/);
+  const collectionMatch = descriptionText.match(/(\S+\.postman_collection\.json)/);
   const envMatch = descriptionText.match(/Environment File:\s*(\S+\.postman_environment\.json)/);
   const reportMatch = descriptionText.match(/reporter-html-export\s+(\S+)\.html/);
   const repoMatch = descriptionText.match(/https:\/\/github\.com\/[^\s]+/);
@@ -214,12 +214,10 @@ async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
   const description = `Execution Level: ${testLevel}\n` +
     `Test Plan: ${testPlanKey}\n` +
     `Test Protocol: ${protocol.key}\n` +
-    `Git Branch: ${evidence.gitBranch}\n` +
-    `Commit SHA: ${evidence.commitSha}\n` +
     `Newman Version: ${evidence.newmanVersion}\n` +
     `Execution Timestamp: ${evidence.timestamp}\n` +
     `Collection: ${protocol.collectionFile}\n` +
-    `Environment: ${protocol.environmentFile}\n` +
+    `Environment: ${evidence.environmentFile}\n` +
     `Status: ${evidence.status}`;
 
   const payload = {
@@ -459,7 +457,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     testPlanKey, protocolKey, testLevel,
     gitBranch, commitSha, newmanVersion, timestamp,
     collectionFile: protocol.collectionFile,
-    environmentFile: path.basename(envPath),
+    environmentFile: envPath ? path.basename(envPath) : 'none',
     status
   };
   const metadataPath = path.join(outputDir, 'run_metadata.json');
@@ -468,7 +466,8 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   // Create Test Execution in Jira
   console.log(`\n   Creating Test Execution in Jira...`);
   const execution = await createTestExecution(testPlanKey, protocol, testLevel, {
-    gitBranch, commitSha, newmanVersion, timestamp, status
+    gitBranch, commitSha, newmanVersion, timestamp, status,
+    environmentFile: envPath ? path.basename(envPath) : 'none'
   });
   console.log(`   ✅ Created: ${execution.key}`);
 
@@ -476,7 +475,6 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   console.log(`\n   Attaching evidence...`);
   await attachFile(execution.key, path.join(outputDir, 'newman_version.txt'));
   await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.html`));
-  await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.json`));
   await attachFile(execution.key, path.join(outputDir, 'run_metadata.json'));
 
   // Update execution fields (labels, fixVersions, components, assignee)
