@@ -17,18 +17,18 @@ import readline from 'readline';
 import path from 'path';
 import { program } from 'commander';
 import dotenv from 'dotenv';
-import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata, getProtocol, findFilesRecursive, getSearchRoot } from './execute-protocol.js';
+import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata, getProtocol, findFilesRecursive, getSearchRoot, xrayAuthenticate, XRAY_BASE_URL } from './execute-protocol.js';
 
 dotenv.config();
 checkCredentials();
 
 const ENV_SUFFIX = '.postman_environment.json';
+const TEST_PLAN_KEY_PATTERN = /^[A-Z][A-Z0-9]+-\d+$/;
 
 const JIRA_BASE_URL = getJiraBaseUrl();
 
 // Fetch tests linked to the test plan via Xray GraphQL
 async function fetchProtocols(testPlanKey) {
-  // Get the test plan summary from Jira
   const planResponse = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=summary,created`, {
     headers: {
       'Authorization': getAuthHeader(),
@@ -42,28 +42,14 @@ async function fetchProtocols(testPlanKey) {
 
   const plan = await planResponse.json();
 
-  // Authenticate with Xray
-  const authResp = await fetch('https://xray.cloud.getxray.app/api/v2/authenticate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: process.env.XRAY_CLIENT_ID,
-      client_secret: process.env.XRAY_CLIENT_SECRET
-    })
-  });
+  const xrayToken = await xrayAuthenticate();
 
-  if (!authResp.ok) {
-    throw new Error(`Xray auth failed: ${authResp.status}`);
-  }
-
-  const xrayToken = (await authResp.text()).replace(/"/g, '');
-
-  // Query Xray GraphQL for tests linked to this test plan
+  const escapedKey = testPlanKey.replace(/"/g, '\\"');
   const graphqlQuery = {
-    query: `{ getTestPlans(limit: 1, jql: "key = ${testPlanKey}") { results { tests(limit: 100) { results { issueId jira(fields: ["key", "summary"]) } } } } }`
+    query: `{ getTestPlans(limit: 1, jql: "key = ${escapedKey}") { results { tests(limit: 100) { results { issueId jira(fields: ["key", "summary"]) } } } } }`
   };
 
-  const gqlResp = await fetch('https://xray.cloud.getxray.app/api/v2/graphql', {
+  const gqlResp = await fetch(`${XRAY_BASE_URL}/api/v2/graphql`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${xrayToken}`,
@@ -151,6 +137,12 @@ async function main() {
     console.error('  Interactive:      node run.js <test_plan_key>');
     console.error('  Non-interactive:  node run.js <test_plan_key> --all --env <env_name>');
     console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --env <env_name>');
+    process.exit(1);
+  }
+
+  if (!TEST_PLAN_KEY_PATTERN.test(flags.testPlanKey)) {
+    console.error(`\n  Invalid test plan key format: "${flags.testPlanKey}"`);
+    console.error('  Expected format: PROJECT-123 (e.g. PF-515)');
     process.exit(1);
   }
 

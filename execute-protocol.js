@@ -12,7 +12,7 @@
  * Also importable by run.js for interactive CLI use.
  */
 
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -28,10 +28,11 @@ const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
 const XRAY_CLIENT_ID = process.env.XRAY_CLIENT_ID;
 const XRAY_CLIENT_SECRET = process.env.XRAY_CLIENT_SECRET;
-const XRAY_BASE_URL = 'https://xray.cloud.getxray.app';
+export const XRAY_BASE_URL = 'https://xray.cloud.getxray.app';
 const JIRA_ASSIGNEE_ACCOUNT_ID = process.env.JIRA_ASSIGNEE_ACCOUNT_ID;
 const TRANSITION_ON_PASS = process.env.TRANSITION_ON_PASS || 'Start Approvals';
 const TRANSITION_ON_FAIL = process.env.TRANSITION_ON_FAIL || 'Done';
+const NEWMAN_INSECURE = process.env.NEWMAN_INSECURE !== 'false';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'output']);
 
@@ -71,7 +72,7 @@ export function findFilesRecursive(dir, suffix) {
 
 let xrayToken = null;
 
-async function xrayAuthenticate() {
+export async function xrayAuthenticate() {
   if (xrayToken) return xrayToken;
 
   const response = await fetch(`${XRAY_BASE_URL}/api/v2/authenticate`, {
@@ -235,7 +236,7 @@ export async function getProtocol(protocolKey) {
     key: protocolKey,
     summary: issue.fields.summary,
     collectionFile: collectionMatch ? collectionMatch[1] : null,
-    reportName: reportMatch ? reportMatch[1] : protocolKey.replace('-', '_'),
+    reportName: reportMatch ? reportMatch[1] : protocolKey.replace(/-/g, '_'),
     repoUrl: repoMatch ? repoMatch[0] : null
   };
 }
@@ -443,17 +444,20 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   console.log(`\n   Running Newman...`);
   const jsonReport = path.join(outputDir, `${protocol.reportName}.json`);
   const htmlReport = path.join(outputDir, `${protocol.reportName}.html`);
-  const newmanCmd = `npx newman run "${collectionPath}"` +
-    (envPath ? ` -e "${envPath}"` : '') +
-    ` --insecure --ignore-redirects` +
-    ` --reporters cli,json,html` +
-    ` --reporter-json-export "${jsonReport}"` +
-    ` --reporter-html-export "${htmlReport}"`;
+  const newmanArgs = [
+    'newman', 'run', collectionPath,
+    ...(envPath ? ['-e', envPath] : []),
+    ...(NEWMAN_INSECURE ? ['--insecure'] : []),
+    '--ignore-redirects',
+    '--reporters', 'cli,json,html',
+    '--reporter-json-export', jsonReport,
+    '--reporter-html-export', htmlReport
+  ];
 
   let status = 'Passed';
   let cliOutput = '';
   try {
-    cliOutput = execSync(newmanCmd, { encoding: 'utf8' });
+    cliOutput = execFileSync('npx', newmanArgs, { encoding: 'utf8', cwd: __dirname });
     console.log(cliOutput);
     console.log(`   ✅ Newman completed`);
   } catch (err) {
