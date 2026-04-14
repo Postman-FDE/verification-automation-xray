@@ -21,8 +21,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const COLLECTIONS_DIR = path.join(__dirname, 'collections');
-const ENVIRONMENTS_DIR = path.join(__dirname, 'postman-environments');
+const ENV_SUFFIX = '.postman_environment.json';
 
 const JIRA_EMAIL = process.env.JIRA_EMAIL;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
@@ -33,6 +32,42 @@ const XRAY_BASE_URL = 'https://xray.cloud.getxray.app';
 const JIRA_ASSIGNEE_ACCOUNT_ID = process.env.JIRA_ASSIGNEE_ACCOUNT_ID;
 const TRANSITION_ON_PASS = process.env.TRANSITION_ON_PASS || 'Start Approvals';
 const TRANSITION_ON_FAIL = process.env.TRANSITION_ON_FAIL || 'Done';
+
+const SKIP_DIRS = new Set(['node_modules', '.git', 'output']);
+
+export function getSearchRoot() {
+  return path.resolve(__dirname, '..');
+}
+
+export function findFileRecursive(dir, fileName) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name === fileName) return fullPath;
+      if (entry.isDirectory()) {
+        const found = findFileRecursive(fullPath, fileName);
+        if (found) return found;
+      }
+    }
+  } catch { /* permission errors, etc. */ }
+  return null;
+}
+
+export function findFilesRecursive(dir, suffix) {
+  const results = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name.endsWith(suffix)) results.push(fullPath);
+      if (entry.isDirectory()) results.push(...findFilesRecursive(fullPath, suffix));
+    }
+  } catch { /* permission errors, etc. */ }
+  return results;
+}
 
 let xrayToken = null;
 
@@ -193,7 +228,6 @@ export async function getProtocol(protocolKey) {
   }
 
   const collectionMatch = descriptionText.match(/(\S+\.postman_collection\.json)/);
-  const envMatch = descriptionText.match(/Environment File:\s*(\S+\.postman_environment\.json)/);
   const reportMatch = descriptionText.match(/reporter-html-export\s+(\S+)\.html/);
   const repoMatch = descriptionText.match(/https:\/\/github\.com\/[^\s]+/);
 
@@ -201,7 +235,6 @@ export async function getProtocol(protocolKey) {
     key: protocolKey,
     summary: issue.fields.summary,
     collectionFile: collectionMatch ? collectionMatch[1] : null,
-    environmentFile: envMatch ? envMatch[1] : null,
     reportName: reportMatch ? reportMatch[1] : protocolKey.replace('-', '_'),
     repoUrl: repoMatch ? repoMatch[0] : null
   };
@@ -356,49 +389,42 @@ async function transitionExecution(executionKey, targetStatusName) {
  *
  * @param {string} testPlanKey - e.g. "PF-501"
  * @param {string} protocolKey - e.g. "PF-502"
- * @param {string} testLevel - "Dev" | "IV" | "VV"
- * @param {object} options - { labels, fixVersions, components, assignee, testPlanAssignee, transitionOnPass, transitionOnFail }
+ * @param {string} testLevel - environment name
+ * @param {object} options - { labels, fixVersions, components, assignee, testPlanAssignee, transitionOnPass, transitionOnFail, protocolDetails, envFilePath }
  * @returns {Promise<{key: string, status: string}>} - created execution key and pass/fail status
  */
 export async function executeProtocol(testPlanKey, protocolKey, testLevel, options = {}) {
-  console.log('\n───────────────────────────────────────────────────────────');
-  console.log(`  Executing: ${protocolKey}  |  Level: ${testLevel}`);
-  console.log('───────────────────────────────────────────────────────────');
+  const protocol = options.protocolDetails || await getProtocol(protocolKey);
 
-  // Fetch protocol details
-  console.log('\n   Fetching protocol details...');
-  const protocol = await getProtocol(protocolKey);
-  console.log(`   Protocol: ${protocol.summary}`);
-  console.log(`   Collection: ${protocol.collectionFile || '(not found)'}`);
-  console.log(`   Environment: ${protocol.environmentFile || '(not found)'}`);
-
-  // Resolve collection file path - check collections/ folder
   let collectionPath = protocol.collectionFile;
-  let envPath = protocol.environmentFile;
+  let envPath = null;
 
-  if (collectionPath) {
-    const inCollections = path.join(COLLECTIONS_DIR, collectionPath);
-    if (fs.existsSync(inCollections)) {
-      collectionPath = inCollections;
-    } else if (!fs.existsSync(collectionPath)) {
-      throw new Error(`Collection file not found: ${collectionPath}\n   Checked: ${inCollections}`);
-    }
-  } else {
+  if (!collectionPath) {
     throw new Error(`Collection file not found in ${protocolKey} description`);
   }
 
-  // Resolve environment file: level-specific file takes priority over Jira description
-  const levelEnvFile = path.join(ENVIRONMENTS_DIR, `${testLevel}.postman_environment.json`);
-  if (fs.existsSync(levelEnvFile)) {
-    envPath = levelEnvFile;
-    console.log(`   Using ${testLevel} environment: ${path.basename(levelEnvFile)}`);
-  } else if (envPath) {
-    const inCollections = path.join(COLLECTIONS_DIR, envPath);
-    if (fs.existsSync(inCollections)) {
-      envPath = inCollections;
-    }
-    console.log(`   Using default environment: ${path.basename(envPath)}`);
+  // Resolve collection: recursively search the parent directory
+  const found = findFileRecursive(getSearchRoot(), collectionPath);
+  if (found) {
+    collectionPath = found;
+  } else {
+    throw new Error(`Collection file not found: ${collectionPath}\n   Searched: ${getSearchRoot()} recursively`);
   }
+
+  // Resolve environment file
+  if (options.envFilePath && fs.existsSync(options.envFilePath)) {
+    envPath = options.envFilePath;
+  }
+
+  const resolvedLevel = envPath ? path.basename(envPath).replace(ENV_SUFFIX, '') : testLevel || 'none';
+
+  console.log('\n───────────────────────────────────────────────────────────');
+  console.log(`  Executing: ${protocolKey}  |  Environment: ${resolvedLevel}`);
+  console.log('───────────────────────────────────────────────────────────');
+  console.log(`   Protocol: ${protocol.summary}`);
+  console.log(`   Collection: ${collectionPath}`);
+  console.log(`   Environment: ${envPath || '(none)'}`);
+  if (envPath) console.log(`   Env file: ${path.relative(getSearchRoot(), envPath)}`);
 
   // Create output dir for evidence
   const outputDir = path.join(__dirname, 'output');
@@ -411,16 +437,6 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     fs.writeFileSync(path.join(outputDir, 'newman_version.txt'), newmanVersion);
   } catch {
     throw new Error('Newman not installed. Run: npm install newman');
-  }
-
-  // Get git metadata
-  let gitBranch = 'N/A';
-  let commitSha = 'N/A';
-  try {
-    gitBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
-    commitSha = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
-  } catch {
-    // Not in a git repo, that's fine
   }
 
   // Run Newman
@@ -454,8 +470,8 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   // Create metadata
   const timestamp = new Date().toISOString();
   const metadata = {
-    testPlanKey, protocolKey, testLevel,
-    gitBranch, commitSha, newmanVersion, timestamp,
+    testPlanKey, protocolKey, testLevel: resolvedLevel,
+    newmanVersion, timestamp,
     collectionFile: protocol.collectionFile,
     environmentFile: envPath ? path.basename(envPath) : 'none',
     status
@@ -465,8 +481,8 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
 
   // Create Test Execution in Jira
   console.log(`\n   Creating Test Execution in Jira...`);
-  const execution = await createTestExecution(testPlanKey, protocol, testLevel, {
-    gitBranch, commitSha, newmanVersion, timestamp, status,
+  const execution = await createTestExecution(testPlanKey, protocol, resolvedLevel, {
+    newmanVersion, timestamp, status,
     environmentFile: envPath ? path.basename(envPath) : 'none'
   });
   console.log(`   ✅ Created: ${execution.key}`);
@@ -500,6 +516,18 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
     await transitionExecution(execution.key, transitionTarget);
   }
 
+  // Clean up output files now that evidence is pushed to Jira
+  const filesToClean = [
+    path.join(outputDir, 'newman_version.txt'),
+    path.join(outputDir, 'run_metadata.json'),
+    jsonReport,
+    htmlReport,
+    cliReportPath
+  ];
+  for (const f of filesToClean) {
+    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch { /* best effort */ }
+  }
+
   console.log(`\n   ✅ Done: ${execution.key} (${status})`);
   console.log(`   View: ${JIRA_BASE_URL}/browse/${execution.key}`);
 
@@ -511,17 +539,16 @@ const isDirectRun = process.argv[1]?.endsWith('execute-protocol.js');
 if (isDirectRun) {
   const [testPlanKey, protocolKey, testLevel] = process.argv.slice(2);
 
-  if (!testPlanKey || !protocolKey || !testLevel) {
-    console.error('Usage: node execute-protocol.js <test_plan_key> <protocol_key> <test_level>');
-    console.error('Example: node execute-protocol.js PF-501 PF-502 VV');
-    console.error('\nTest Levels: Dev | IV | VV');
+  if (!testPlanKey || !protocolKey) {
+    console.error('Usage: node execute-protocol.js <test_plan_key> <protocol_key>');
+    console.error('Example: node execute-protocol.js PF-501 PF-502');
     process.exit(1);
   }
 
   checkCredentials();
 
   fetchTestPlanMetadata(testPlanKey)
-    .then(metadata => executeProtocol(testPlanKey, protocolKey, testLevel, {
+    .then(metadata => executeProtocol(testPlanKey, protocolKey, '', {
       labels: metadata.labels,
       fixVersions: metadata.fixVersions,
       components: metadata.components,
