@@ -4,34 +4,31 @@
  * Interactive CLI to execute Test Protocols
  *
  * Fetches protocols from Jira, lets you pick which to run, and executes them.
+ * Environment files are discovered from the parent directory and the user picks one.
  *
  * Interactive:
  *   node run.js PF-501
  *
  * Non-interactive (CI/scripts):
- *   node run.js PF-501 --all --level VV
+ *   node run.js PF-501 --all --env CAPI_Formal
  */
 
 import readline from 'readline';
-import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { program } from 'commander';
 import dotenv from 'dotenv';
-import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata } from './execute-protocol.js';
-import { parseInteractiveSelection, resolveProtocolIndices, resolveTestLevel } from './run-selection.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { getAuthHeader, getJiraBaseUrl, checkCredentials, executeProtocol, fetchTestPlanMetadata, getProtocol, findFilesRecursive, getSearchRoot, xrayAuthenticate, XRAY_BASE_URL } from './execute-protocol.js';
 
 dotenv.config();
 checkCredentials();
+
+const ENV_SUFFIX = '.postman_environment.json';
+const TEST_PLAN_KEY_PATTERN = /^[A-Z][A-Z0-9]+-\d+$/;
 
 const JIRA_BASE_URL = getJiraBaseUrl();
 
 // Fetch tests linked to the test plan via Xray GraphQL
 async function fetchProtocols(testPlanKey) {
-  // Get the test plan summary from Jira
   const planResponse = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue/${testPlanKey}?fields=summary,created`, {
     headers: {
       'Authorization': getAuthHeader(),
@@ -45,28 +42,14 @@ async function fetchProtocols(testPlanKey) {
 
   const plan = await planResponse.json();
 
-  // Authenticate with Xray
-  const authResp = await fetch('https://xray.cloud.getxray.app/api/v2/authenticate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: process.env.XRAY_CLIENT_ID,
-      client_secret: process.env.XRAY_CLIENT_SECRET
-    })
-  });
+  const xrayToken = await xrayAuthenticate();
 
-  if (!authResp.ok) {
-    throw new Error(`Xray auth failed: ${authResp.status}`);
-  }
-
-  const xrayToken = (await authResp.text()).replace(/"/g, '');
-
-  // Query Xray GraphQL for tests linked to this test plan
+  const escapedKey = testPlanKey.replace(/"/g, '\\"');
   const graphqlQuery = {
-    query: `{ getTestPlans(limit: 1, jql: "key = ${testPlanKey}") { results { tests(limit: 100) { results { issueId jira(fields: ["key", "summary"]) } } } } }`
+    query: `{ getTestPlans(limit: 1, jql: "key = ${escapedKey}") { results { tests(limit: 100) { results { issueId jira(fields: ["key", "summary"]) } } } } }`
   };
 
-  const gqlResp = await fetch('https://xray.cloud.getxray.app/api/v2/graphql', {
+  const gqlResp = await fetch(`${XRAY_BASE_URL}/api/v2/graphql`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${xrayToken}`,
@@ -97,43 +80,54 @@ function prompt(rl, question) {
   });
 }
 
+function parseInteractiveSelection(input, protocols) {
+  if (input.toLowerCase() === 'all') {
+    return [...protocols.keys()];
+  }
+  return input.split(',')
+    .map(s => parseInt(s.trim(), 10) - 1)
+    .filter(i => i >= 0 && i < protocols.length);
+}
+
+function resolveProtocolIndices(keys, protocols) {
+  if (!keys) return [];
+  return keys.map(k => {
+    const num = parseInt(k, 10);
+    if (!isNaN(num) && num >= 1 && num <= protocols.length) return num - 1;
+    const idx = protocols.findIndex(p => p.key === k);
+    return idx >= 0 ? idx : -1;
+  }).filter(i => i >= 0);
+}
+
+function discoverEnvironments() {
+  const searchRoot = getSearchRoot();
+  const found = findFilesRecursive(searchRoot, ENV_SUFFIX);
+  return found
+    .map(filePath => ({ name: path.basename(filePath).replace(ENV_SUFFIX, ''), filePath }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // Parse CLI flags for non-interactive mode
 function parseFlags() {
   program
     .argument('<testPlanKey>', 'Jira Test Plan key (e.g. PF-501)')
     .option('--all', 'run all protocols non-interactively')
-    .option('--level <level>', `verification level (${TEST_LEVELS.join(', ') || 'none found'})`)
-    .option('--dev', 'shortcut for --level Dev')
-    .option('--iv', 'shortcut for --level IV')
-    .option('--vv', 'shortcut for --level VV')
+    .option('--env <name>', 'environment name to run against (non-interactive)')
     .option('--protocols <keys>', 'comma-separated protocol keys to run')
     .option('--assignee <assignee>', 'assignee filter')
     .parse();
 
   const opts = program.opts();
-  const level = opts.dev ? 'Dev' : opts.iv ? 'IV' : opts.vv ? 'VV' : opts.level ?? null;
   const protocolKeys = opts.protocols ? opts.protocols.split(',').map(s => s.trim()) : null;
 
   return {
     testPlanKey: program.processedArgs[0],
     all: opts.all ?? false,
-    level,
+    env: opts.env ?? null,
     protocolKeys,
     assignee: opts.assignee ?? null
   };
 }
-
-const ENVIRONMENTS_DIR = path.join(__dirname, 'postman-environments');
-
-function discoverTestLevels() {
-  if (!fs.existsSync(ENVIRONMENTS_DIR)) return [];
-  return fs.readdirSync(ENVIRONMENTS_DIR)
-    .filter(f => f.endsWith('.postman_environment.json'))
-    .map(f => f.replace('.postman_environment.json', ''))
-    .sort();
-}
-
-const TEST_LEVELS = discoverTestLevels();
 
 async function main() {
   const flags = parseFlags();
@@ -141,8 +135,14 @@ async function main() {
   if (!flags.testPlanKey || flags.testPlanKey.startsWith('--')) {
     console.error('Usage:');
     console.error('  Interactive:      node run.js <test_plan_key>');
-    console.error(`  Non-interactive:  node run.js <test_plan_key> --all --level <${TEST_LEVELS.join('|') || 'level'}>`);
-    console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --level <level>');
+    console.error('  Non-interactive:  node run.js <test_plan_key> --all --env <env_name>');
+    console.error('  Select specific:  node run.js <test_plan_key> --protocols 1,3 --env <env_name>');
+    process.exit(1);
+  }
+
+  if (!TEST_PLAN_KEY_PATTERN.test(flags.testPlanKey)) {
+    console.error(`\n  Invalid test plan key format: "${flags.testPlanKey}"`);
+    console.error('  Expected format: PROJECT-123 (e.g. PF-515)');
     process.exit(1);
   }
 
@@ -174,7 +174,14 @@ async function main() {
   });
 
   let selectedIndices;
-  let testLevel;
+  let selectedEnv;
+
+  // Discover all environment files in the parent directory
+  const allEnvs = discoverEnvironments();
+  if (allEnvs.length === 0) {
+    console.log('\n  No *.postman_environment.json files found in the parent directory.');
+    process.exit(1);
+  }
 
   if (isInteractive) {
     const rl = readline.createInterface({
@@ -182,7 +189,7 @@ async function main() {
       output: process.stdout
     });
 
-    // Select protocols
+    // Step 1: Pick protocols
     console.log('');
     const selection = await prompt(rl, '  Which protocols to run? (all, or comma-separated: 1,3): ');
     selectedIndices = parseInteractiveSelection(selection, protocols);
@@ -193,67 +200,78 @@ async function main() {
       process.exit(0);
     }
 
-    // Select test level
-    if (TEST_LEVELS.length === 0) {
-      console.log('\n  No environment files found in postman-environments/.');
-      console.log('  Add files named <Level>.postman_environment.json');
-      rl.close();
-      process.exit(1);
-    }
-    console.log('\n  Select test level:');
-    TEST_LEVELS.forEach((level, i) => {
-      console.log(`    [${i + 1}] ${level}`);
+    // Step 2: Pick environment
+    console.log('\n  Available environments:\n');
+    allEnvs.forEach((env, i) => {
+      console.log(`    [${i + 1}] ${env.name}`);
     });
     console.log('');
-    const levelInput = await prompt(rl, '  Test level number or name: ');
+    const envInput = await prompt(rl, '  Select environment (number or name): ');
 
-    testLevel = resolveTestLevel(levelInput, TEST_LEVELS);
-    if (!testLevel) {
-      console.log(`\n  Invalid test level. Available: ${TEST_LEVELS.join(', ')}`);
+    const envIndex = parseInt(envInput, 10) - 1;
+    if (!isNaN(envIndex) && envIndex >= 0 && envIndex < allEnvs.length) {
+      selectedEnv = allEnvs[envIndex];
+    } else {
+      selectedEnv = allEnvs.find(e => e.name === envInput);
+    }
+
+    if (!selectedEnv) {
+      console.log(`\n  Invalid selection. Available: ${allEnvs.map(e => e.name).join(', ')}`);
       rl.close();
       process.exit(1);
     }
 
     rl.close();
-
   } else {
-    // Non-interactive mode
+    // Non-interactive: resolve protocols
     if (flags.all) {
       selectedIndices = [...protocols.keys()];
     } else {
       selectedIndices = resolveProtocolIndices(flags.protocolKeys, protocols);
     }
 
-    testLevel = flags.level ? resolveTestLevel(flags.level, TEST_LEVELS) : null;
-    if (!testLevel) {
-      console.error(`\n  Invalid test level "${flags.level}". Available: ${TEST_LEVELS.join(', ') || '(no environments found)'}`);
+    // Non-interactive: resolve environment by name
+    if (!flags.env) {
+      console.error('\n  --env <name> is required in non-interactive mode.');
+      console.error(`  Available: ${allEnvs.map(e => e.name).join(', ')}`);
+      process.exit(1);
+    }
+    selectedEnv = allEnvs.find(e => e.name === flags.env);
+    if (!selectedEnv) {
+      console.error(`\n  Environment "${flags.env}" not found.`);
+      console.error(`  Available: ${allEnvs.map(e => e.name).join(', ')}`);
       process.exit(1);
     }
   }
 
   const selected = selectedIndices.map(i => protocols[i]);
 
+  // Fetch protocol details once (collection name, etc.)
+  console.log('\n  Fetching protocol details...');
+  const protocolDetails = await Promise.all(selected.map(p => getProtocol(p.key)));
+
   console.log('\n═══════════════════════════════════════════════════════════');
-  console.log(`  Running ${selected.length} protocol(s) at ${testLevel} level`);
+  console.log(`  Running ${selected.length} protocol(s) with ${selectedEnv.name}`);
   console.log('═══════════════════════════════════════════════════════════');
 
-  // Execute each selected protocol
   const results = [];
   const execOptions = {
     labels: planMetadata.labels,
     fixVersions: planMetadata.fixVersions,
     components: planMetadata.components,
     assignee: flags.assignee,
-    testPlanAssignee: planMetadata.assignee?.accountId || null
+    testPlanAssignee: planMetadata.assignee?.accountId || null,
+    envFilePath: selectedEnv.filePath
   };
 
-  for (const protocol of selected) {
+  for (let i = 0; i < selected.length; i++) {
     try {
-      const result = await executeProtocol(testPlanKey, protocol.key, testLevel, execOptions);
+      const opts = { ...execOptions, protocolDetails: protocolDetails[i] };
+      const result = await executeProtocol(testPlanKey, selected[i].key, selectedEnv.name, opts);
       results.push(result);
     } catch (err) {
-      console.error(`\n  ❌ Failed: ${protocol.key} - ${err.message}`);
-      results.push({ key: null, status: 'Error', protocol: protocol.summary, error: err.message });
+      console.error(`\n  ❌ Failed: ${selected[i].key} - ${err.message}`);
+      results.push({ key: null, status: 'Error', protocol: selected[i].summary, error: err.message });
     }
   }
 
@@ -261,9 +279,9 @@ async function main() {
   console.log('\n═══════════════════════════════════════════════════════════');
   console.log('  EXECUTION SUMMARY');
   console.log('═══════════════════════════════════════════════════════════');
-  console.log(`  Test Plan:  ${testPlanKey}`);
-  console.log(`  Level:      ${testLevel}`);
-  console.log(`  Protocols:  ${results.length}`);
+  console.log(`  Test Plan:     ${testPlanKey}`);
+  console.log(`  Environment:   ${selectedEnv.name}`);
+  console.log(`  Protocols:     ${results.length}`);
   console.log('');
 
   for (const r of results) {

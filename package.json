@@ -4,17 +4,12 @@
   "type": "module",
   "description": "Create Test Plans and execute tests with automatic evidence upload",
   "scripts": {
-    "create": "node create-test-plan.js",
-    "execute": "node execute-protocol.js",
-    "run": "node run.js",
-    "test": "node --test run.test.js"
+    "run": "node run.js"
   },
   "dependencies": {
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "newman": "^6.2.2",
-    "newman-reporter-html": "^1.0.5",
-    "newman-reporter-htmlextra": "^1.23.1",
-    "puppeteer": "^24.37.5"
+    "newman-reporter-html": "^1.0.5"
   }
 }
