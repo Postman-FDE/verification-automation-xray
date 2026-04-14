@@ -32,8 +32,6 @@ export const XRAY_BASE_URL = 'https://xray.cloud.getxray.app';
 const JIRA_ASSIGNEE_ACCOUNT_ID = process.env.JIRA_ASSIGNEE_ACCOUNT_ID;
 const TRANSITION_ON_PASS = process.env.TRANSITION_ON_PASS || 'Start Approvals';
 const TRANSITION_ON_FAIL = process.env.TRANSITION_ON_FAIL || 'Done';
-const NEWMAN_INSECURE = process.env.NEWMAN_INSECURE !== 'false';
-
 const SKIP_DIRS = new Set(['node_modules', '.git', 'output']);
 
 export function getSearchRoot() {
@@ -447,7 +445,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   const newmanArgs = [
     'newman', 'run', collectionPath,
     ...(envPath ? ['-e', envPath] : []),
-    ...(NEWMAN_INSECURE ? ['--insecure'] : []),
+    '--insecure',
     '--ignore-redirects',
     '--reporters', 'cli,json,html',
     '--reporter-json-export', jsonReport,

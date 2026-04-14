@@ -51,7 +51,6 @@ your-test-repo/
 | `JIRA_ASSIGNEE_ACCOUNT_ID` | No | Overrides Test Execution assignee |
 | `TRANSITION_ON_PASS` | No | Status on pass (default: `Start Approvals`) |
 | `TRANSITION_ON_FAIL` | No | Status on fail (default: `Done`) |
-| `NEWMAN_INSECURE` | No | Skip SSL checks (default: `true`, set `false` to enforce) |
 
 ## Usage
 
