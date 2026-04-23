@@ -246,7 +246,7 @@ async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
   const description = `Execution Level: ${testLevel}\n` +
     `Test Plan: ${testPlanKey}\n` +
     `Test Protocol: ${protocol.key}\n` +
-    `Newman Version: ${evidence.newmanVersion}\n` +
+    `Postman CLI Version: ${evidence.cliVersion}\n` +
     `Execution Timestamp: ${evidence.timestamp}\n` +
     `Collection: ${protocol.collectionFile}\n` +
     `Environment: ${evidence.environmentFile}\n` +
@@ -265,7 +265,7 @@ async function createTestExecution(testPlanKey, protocol, testLevel, evidence) {
       {
         testKey: protocol.key,
         status: evidence.status === 'Passed' ? 'PASSED' : 'FAILED',
-        comment: `Execution Level: ${testLevel}\nNewman Version: ${evidence.newmanVersion}\nCollection: ${protocol.collectionFile}`
+        comment: `Execution Level: ${testLevel}\nPostman CLI Version: ${evidence.cliVersion}\nCollection: ${protocol.collectionFile}`
       }
     ]
   };
@@ -384,7 +384,7 @@ async function transitionExecution(executionKey, targetStatusName) {
 }
 
 /**
- * Execute a single protocol: run Newman, create Jira Test Execution, attach evidence.
+ * Execute a single protocol: run Postman CLI, create Jira Test Execution, attach evidence.
  *
  * @param {string} testPlanKey - e.g. "PF-501"
  * @param {string} protocolKey - e.g. "PF-502"
@@ -429,43 +429,41 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   const outputDir = path.join(__dirname, 'output');
   if (!fs.existsSync(outputDir)) { fs.mkdirSync(outputDir); }
 
-  // Capture Newman version
-  let newmanVersion;
+  // Capture Postman CLI version
+  let cliVersion;
   try {
-    newmanVersion = execSync('npx newman -v', { encoding: 'utf8', cwd: __dirname }).trim();
-    fs.writeFileSync(path.join(outputDir, 'newman_version.txt'), newmanVersion);
+    cliVersion = execSync('npx postman --version', { encoding: 'utf8', cwd: __dirname }).trim();
+    fs.writeFileSync(path.join(outputDir, 'postman_cli_version.txt'), cliVersion);
   } catch {
-    throw new Error('Newman not installed. Run: npm install newman');
+    throw new Error('Postman CLI not installed. Run: npm install');
   }
 
-  // Run Newman
-  console.log(`\n   Running Newman...`);
-  const jsonReport = path.join(outputDir, `${protocol.reportName}.json`);
+  // Run Postman CLI
+  console.log(`\n   Running Postman CLI...`);
   const htmlReport = path.join(outputDir, `${protocol.reportName}.html`);
-  const newmanArgs = [
-    'newman', 'run', collectionPath,
+  const cliArgs = [
+    'postman', 'collection', 'run', collectionPath,
     ...(envPath ? ['-e', envPath] : []),
     '--insecure',
     '--ignore-redirects',
-    '--reporters', 'cli,json,html',
-    '--reporter-json-export', jsonReport,
+    '-r', 'cli,html',
     '--reporter-html-export', htmlReport
   ];
 
   let status = 'Passed';
   let cliOutput = '';
   try {
-    cliOutput = execFileSync('npx', newmanArgs, { encoding: 'utf8', cwd: __dirname });
+    cliOutput = execFileSync('npx', cliArgs, { encoding: 'utf8', cwd: __dirname });
     console.log(cliOutput);
-    console.log(`   ✅ Newman completed`);
+    console.log(`   ✅ Postman CLI completed`);
   } catch (err) {
     cliOutput = err.stdout || '';
     console.log(cliOutput);
-    console.log(`   ⚠️  Newman had failures`);
+    console.log(`   ⚠️  Postman CLI had failures`);
     status = 'Failed';
   }
 
-  // Save CLI output as the newman report text file
+  // Save CLI output as the run report text file
   const cliReportPath = path.join(outputDir, `${protocol.reportName}_report.txt`);
   fs.writeFileSync(cliReportPath, cliOutput);
 
@@ -473,7 +471,7 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   const timestamp = new Date().toISOString();
   const metadata = {
     testPlanKey, protocolKey, testLevel: resolvedLevel,
-    newmanVersion, timestamp,
+    postmanCliVersion: cliVersion, timestamp,
     collectionFile: protocol.collectionFile,
     environmentFile: envPath ? path.basename(envPath) : 'none',
     status
@@ -484,14 +482,14 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
   // Create Test Execution in Jira
   console.log(`\n   Creating Test Execution in Jira...`);
   const execution = await createTestExecution(testPlanKey, protocol, resolvedLevel, {
-    newmanVersion, timestamp, status,
+    cliVersion, timestamp, status,
     environmentFile: envPath ? path.basename(envPath) : 'none'
   });
   console.log(`   ✅ Created: ${execution.key}`);
 
   // Attach evidence
   console.log(`\n   Attaching evidence...`);
-  await attachFile(execution.key, path.join(outputDir, 'newman_version.txt'));
+  await attachFile(execution.key, path.join(outputDir, 'postman_cli_version.txt'));
   await attachFile(execution.key, path.join(outputDir, `${protocol.reportName}.html`));
   await attachFile(execution.key, path.join(outputDir, 'run_metadata.json'));
 
@@ -520,9 +518,8 @@ export async function executeProtocol(testPlanKey, protocolKey, testLevel, optio
 
   // Clean up output files now that evidence is pushed to Jira
   const filesToClean = [
-    path.join(outputDir, 'newman_version.txt'),
+    path.join(outputDir, 'postman_cli_version.txt'),
     path.join(outputDir, 'run_metadata.json'),
-    jsonReport,
     htmlReport,
     cliReportPath
   ];

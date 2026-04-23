@@ -1,6 +1,6 @@
 # Verification Automation Platform
 
-Automates the manual test execution workflow for Jira/Xray: runs Postman collections via Newman, creates Test Executions in Jira, uploads evidence, inherits metadata from the Test Plan, and transitions issue status — all in a single command.
+Automates the manual test execution workflow for Jira/Xray: runs Postman collections via the Postman CLI, creates Test Executions in Jira, uploads evidence, inherits metadata from the Test Plan, and transitions issue status — all in a single command.
 
 Designed to be **dropped into any existing repo** that already contains Postman collections and environments.
 
@@ -86,7 +86,7 @@ node run.js PF-515 --protocols 1,2 --env CAPI_BASE_DEV
 
 For each protocol, the script:
 - Creates a **Test Execution** in Jira linked to the Test Plan
-- Attaches evidence: Newman HTML report, Newman version, run metadata
+- Attaches evidence: HTML report, Postman CLI version, run metadata
 - Copies labels, fix versions, components, and assignee from the Test Plan
 - Transitions the issue status based on pass/fail
 
